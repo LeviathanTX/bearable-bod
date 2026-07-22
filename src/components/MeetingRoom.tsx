@@ -299,8 +299,8 @@ function SetupPanel({
   ];
 
   return (
-    <div className="flex-1 flex items-center justify-center p-8">
-      <div className="w-full max-w-3xl space-y-6">
+    <div className="flex-1 overflow-y-auto p-8">
+      <div className="w-full max-w-3xl mx-auto space-y-6">
         <div>
           <h3 className="text-white text-lg font-medium mb-1">Select Board Seats</h3>
           <p className="text-gray-400 text-sm">Choose up to 6 advisors for this session.</p>
