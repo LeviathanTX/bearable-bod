@@ -5,8 +5,9 @@ import { checkAiCallCap } from '@/lib/rate-limit';
 import { db } from '@/lib/db/client';
 import { orgs } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
+import { getAwsRegion } from '@/lib/aws-config';
 
-const polly = new PollyClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const polly = new PollyClient({ region: getAwsRegion() });
 
 export const NEURAL_VOICES = [
   { id: 'Matthew', label: 'Matthew', gender: 'Male', accent: 'US' },
