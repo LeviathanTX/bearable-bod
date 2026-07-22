@@ -4,8 +4,15 @@ import { eq, and, isNull } from 'drizzle-orm';
 import { generateToken, hashToken, createSession } from './session';
 import { sendEmail } from '@/lib/email/ses';
 
-const MAGIC_LINK_EXPIRY_MS = 15 * 60 * 1000; // 15 minutes for login
-const INVITE_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days for invites
+const MAGIC_LINK_EXPIRY_MS = 15 * 60 * 1000;
+const INVITE_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+
+function getBaseUrl(): string {
+  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL;
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return 'http://localhost:3000';
+}
 
 export async function sendMagicLink(email: string): Promise<void> {
   const token = generateToken();
@@ -19,7 +26,7 @@ export async function sendMagicLink(email: string): Promise<void> {
     expiresAt,
   });
 
-  const url = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/magic?token=${token}`;
+  const url = `${getBaseUrl()}/api/auth/magic?token=${token}`;
 
   await sendEmail({
     to: email,
@@ -47,7 +54,7 @@ export async function sendFounderInvite(
     expiresAt,
   });
 
-  const url = `${process.env.NEXT_PUBLIC_APP_URL}/api/invites/accept?token=${token}`;
+  const url = `${getBaseUrl()}/api/invites/accept?token=${token}`;
 
   await sendEmail({
     to: email,
