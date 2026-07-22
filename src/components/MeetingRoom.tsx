@@ -151,7 +151,7 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-gray-900/95 flex flex-col">
+    <div className="fixed inset-0 z-50 bg-gray-900 flex flex-col">
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-3 bg-gray-800 border-b border-gray-700">
         <div className="flex items-center gap-4">
