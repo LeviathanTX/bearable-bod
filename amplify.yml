@@ -8,6 +8,12 @@ frontend:
         - npm install
     build:
       commands:
+        - echo "DATABASE_URL=$DATABASE_URL" >> .env.production
+        - echo "PREBOARD_AWS_REGION=$PREBOARD_AWS_REGION" >> .env.production
+        - echo "S3_BUCKET_DOCUMENTS=$S3_BUCKET_DOCUMENTS" >> .env.production
+        - echo "SESSION_COOKIE_NAME=$SESSION_COOKIE_NAME" >> .env.production
+        - echo "SES_FROM_EMAIL=$SES_FROM_EMAIL" >> .env.production
+        - echo "NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL" >> .env.production
         - npm run build
   artifacts:
     baseDirectory: .next
