@@ -108,6 +108,8 @@ export const boardMembers = pgTable('board_members', {
   avatarEmoji: text('avatar_emoji'),
   avatarUrl: text('avatar_url'),
   model: text('model').default('us.anthropic.claude-sonnet-4-6'),
+  voiceId: text('voice_id'),
+  mcpConnectorIds: jsonb('mcp_connector_ids').default([]),
   active: boolean('active').default(true),
   version: integer('version').default(1),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
@@ -141,6 +143,7 @@ export const reviewSessions = pgTable('review_sessions', {
   seatIds: jsonb('seat_ids').default([]),
   synthesis: text('synthesis'),
   punchList: jsonb('punch_list').default([]),
+  metadata: jsonb('metadata').default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (t) => [
@@ -245,6 +248,38 @@ export const refinementProposals = pgTable('refinement_proposals', {
   decidedAt: timestamp('decided_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
+
+export const boardMemberTemplates = pgTable('board_member_templates', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  templateSet: text('template_set').notNull(),
+  sortOrder: integer('sort_order').notNull().default(0),
+  name: text('name').notNull(),
+  title: text('title').notNull(),
+  committeeRole: text('committee_role'),
+  expertise: jsonb('expertise').default([]),
+  personaPrompt: text('persona_prompt'),
+  seatContext: text('seat_context'),
+  interrogationStyle: text('interrogation_style'),
+  avatarEmoji: text('avatar_emoji'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('board_member_templates_set_idx').on(t.templateSet),
+]);
+
+export const mcpConnectors = pgTable('mcp_connectors', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => orgs.id),
+  name: text('name').notNull(),
+  serverUrl: text('server_url').notNull(),
+  authType: text('auth_type').notNull().default('none'),
+  credentialsEncrypted: text('credentials_encrypted'),
+  status: text('status').notNull().default('active'),
+  allowedTools: jsonb('allowed_tools').default([]),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('mcp_connectors_org_idx').on(t.orgId),
+]);
 
 export const appEvents = pgTable('app_events', {
   id: uuid('id').primaryKey().defaultRandom(),

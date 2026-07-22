@@ -17,6 +17,7 @@ export function AppShell({ session, children }: Props) {
         { href: '/dashboard', label: 'Dashboard' },
         { href: '/companies', label: 'Companies' },
         { href: '/board-members', label: 'Board' },
+        { href: '/connectors', label: 'Connectors' },
         { href: '/proposals', label: 'Proposals' },
       ]
     : [

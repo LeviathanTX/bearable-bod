@@ -7,7 +7,7 @@ import * as schema from './schema';
 const RLS_TABLES = [
   'companies', 'board_members', 'board_member_versions', 'review_sessions',
   'session_takes', 'objections', 'documents', 'document_chunks',
-  'company_memory', 'outcome_logs', 'refinement_proposals',
+  'company_memory', 'outcome_logs', 'refinement_proposals', 'mcp_connectors',
 ];
 const RLS_TABLE_PATTERN = new RegExp(`\\b(${RLS_TABLES.join('|')})\\b`);
 
