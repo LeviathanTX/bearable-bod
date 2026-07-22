@@ -17,6 +17,7 @@ const pool = postgres(connectionString, {
   max: 10,
   idle_timeout: 20,
   connect_timeout: 10,
+  ssl: 'require',
 });
 
 const baseDb = drizzle(pool, { schema });
