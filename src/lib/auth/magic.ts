@@ -10,8 +10,7 @@ const INVITE_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 function getBaseUrl(): string {
   if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL;
   if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  return 'http://localhost:3000';
+  return 'https://preboard-three.vercel.app';
 }
 
 export async function sendMagicLink(email: string): Promise<void> {
