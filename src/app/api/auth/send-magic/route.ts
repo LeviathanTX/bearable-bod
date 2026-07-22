@@ -20,6 +20,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     console.error('send-magic error:', err);
-    return NextResponse.json({ error: err.message || 'Internal error', stack: process.env.NODE_ENV !== 'production' ? err.stack : undefined }, { status: 500 });
+    const detail = {
+      error: err.message || 'Internal error',
+      code: err.code,
+      detail: err.detail,
+      hint: err.hint,
+      severity: err.severity,
+    };
+    return NextResponse.json(detail, { status: 500 });
   }
 }
