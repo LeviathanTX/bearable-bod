@@ -1,5 +1,5 @@
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
-import { getAwsRegion } from '@/lib/aws-config';
+import { getAwsClientConfig } from '@/lib/aws-config';
 
 const DEFAULT_MODEL = 'us.anthropic.claude-sonnet-4-6-v1:0';
 
@@ -7,9 +7,7 @@ let bedrockClient: BedrockRuntimeClient | null = null;
 
 function getBedrock(): BedrockRuntimeClient {
   if (!bedrockClient) {
-    bedrockClient = new BedrockRuntimeClient({
-      region: getAwsRegion(),
-    });
+    bedrockClient = new BedrockRuntimeClient(getAwsClientConfig());
   }
   return bedrockClient;
 }

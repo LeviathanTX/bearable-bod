@@ -1,12 +1,12 @@
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { getAwsRegion } from '@/lib/aws-config';
+import { getAwsClientConfig } from '@/lib/aws-config';
 
 let s3Client: S3Client | null = null;
 
 function getS3(): S3Client {
   if (!s3Client) {
-    s3Client = new S3Client({ region: getAwsRegion() });
+    s3Client = new S3Client(getAwsClientConfig());
   }
   return s3Client;
 }

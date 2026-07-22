@@ -1,11 +1,11 @@
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
-import { getAwsRegion } from '@/lib/aws-config';
+import { getAwsClientConfig } from '@/lib/aws-config';
 
 let sesClient: SESClient | null = null;
 
 function getSES(): SESClient {
   if (!sesClient) {
-    sesClient = new SESClient({ region: getAwsRegion() });
+    sesClient = new SESClient(getAwsClientConfig());
   }
   return sesClient;
 }
