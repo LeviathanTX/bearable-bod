@@ -569,21 +569,26 @@ async function runChairSynthesis(
   votes: { boardMemberId: string; vote: string; rationale: string | null; conditions: any }[],
   seats: BoardMemberRow[],
 ): Promise<string> {
-  const interrogationText = interrogations.map((r) => r.content).join('\n---\n');
-  const adviseText = adviseResults.map((r) => r.content).join('\n---\n');
+  const truncate = (s: string, max: number) => s.length > max ? s.slice(0, max) + '...' : s;
+
   const crossExamText = crossExamResults.map((r) => {
     const seat = seats.find((s) => s.id === r.boardMemberId);
-    return `[${seat?.name}]: ${r.content}`;
+    return `[${seat?.name}]: ${truncate(r.content, 800)}`;
   }).join('\n---\n');
 
   const voteText = votes.map((v) => {
     const seat = seats.find((s) => s.id === v.boardMemberId);
-    return `${seat?.name}: ${v.vote} - ${v.rationale || ''}`;
+    return `${seat?.name}: ${v.vote} - ${truncate(v.rationale || '', 200)}`;
   }).join('\n');
+
+  const adviseText = adviseResults.map((r) => {
+    const seat = seats.find((s) => s.id === r.boardMemberId);
+    return `[${seat?.name}]: ${truncate(r.content, 400)}`;
+  }).join('\n---\n');
 
   const { data: synthesis } = await converseJson<SynthesisOutput>({
     model: SYNTHESIS_MODEL,
-    maxTokens: 4000,
+    maxTokens: 3000,
     systemPrompt: `You are the Chair synthesizing a board review session. Return a JSON object with this exact structure:
 {
   "agreements": ["string - areas where board members agree"],
@@ -593,7 +598,7 @@ async function runChairSynthesis(
   "objectionUpdates": [{"title": "objection title", "newState": "addressed|resolved|still_weak", "reason": "why"}]
 }
 Rank punchList by severity (deal_killers first). Surface disagreements explicitly. Incorporate vote outcomes and cross-examination concessions.`,
-    userMessage: `Company: ${context.company.name}\nStage: ${context.company.stage}\n\nInterrogation:\n${interrogationText}\n\nCross-Examination:\n${crossExamText || 'N/A'}\n\nAdvise:\n${adviseText}\n\nVotes:\n${voteText || 'N/A'}\n\nObjections:\n${context.openObjections}`,
+    userMessage: `Company: ${context.company.name}\nStage: ${context.company.stage}\n\nCross-Examination (incorporates interrogation findings):\n${crossExamText || 'N/A'}\n\nAdvise:\n${adviseText}\n\nVotes:\n${voteText || 'N/A'}\n\nObjections:\n${context.openObjections}`,
   });
 
   // Build human-readable synthesis text from structured data
