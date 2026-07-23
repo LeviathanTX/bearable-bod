@@ -63,8 +63,54 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
   const [speakerLabel, setSpeakerLabel] = useState<string | null>(null);
   const [voteCards, setVoteCards] = useState<VoteCard[]>([]);
   const [votesRevealed, setVotesRevealed] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [playingTakeId, setPlayingTakeId] = useState<string | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const mutedRef = useRef(false);
+
+  useEffect(() => { mutedRef.current = muted; }, [muted]);
+
+  const speakTake = useCallback(async (text: string, voiceId: string, takeId?: string) => {
+    if (mutedRef.current || abortRef.current) return;
+    try {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (takeId) setPlayingTakeId(takeId);
+      const trimmed = text.slice(0, 3000);
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: trimmed, voiceId }),
+      });
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        audioRef.current = null;
+        setPlayingTakeId(null);
+      };
+      if (!mutedRef.current && !abortRef.current) {
+        await audio.play();
+      }
+    } catch {
+      setPlayingTakeId(null);
+    }
+  }, []);
+
+  const stopAudio = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+      setPlayingTakeId(null);
+    }
+  }, []);
 
   const toggleSeat = (id: string) => {
     setSelectedSeats((prev) =>
@@ -160,6 +206,11 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
 
         const { done, data } = await runOneSeat(apiPhase);
         await fetchTakes();
+
+        if (data.content && member?.voiceId) {
+          await speakTake(data.content, member.voiceId, data.takeId);
+        }
+
         clearSpeaker();
 
         if (phaseName === 'voting' && data.vote) {
@@ -268,12 +319,29 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
             {phaseLabel(phase)}
           </span>
         </div>
-        <button
-          onClick={() => { abortRef.current = true; onClose(); }}
-          className="text-gray-400 hover:text-white transition-colors text-sm"
-        >
-          Leave Meeting
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => { setMuted((m) => !m); if (!muted) stopAudio(); }}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+              muted ? 'bg-red-500/20 text-red-300 border border-red-500/30' : 'bg-gray-700 text-gray-300 border border-gray-600 hover:bg-gray-600'
+            }`}
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+              {muted ? (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 9.75L19.5 12m0 0l2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6l4.72-4.72a.75.75 0 011.28.531V19.94a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.506-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+              )}
+            </svg>
+            {muted ? 'Muted' : 'Audio On'}
+          </button>
+          <button
+            onClick={() => { abortRef.current = true; stopAudio(); onClose(); }}
+            className="text-gray-400 hover:text-white transition-colors text-sm"
+          >
+            Leave Meeting
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 flex overflow-hidden">
@@ -313,6 +381,8 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
                       latestTake={latestTake}
                       isActive={isActive}
                       phase={phase}
+                      isPlaying={playingTakeId === latestTake?.id}
+                      onReplay={latestTake && member.voiceId && !muted ? () => speakTake(latestTake.content, member.voiceId!, latestTake.id) : undefined}
                     />
                   );
                 })}
@@ -615,11 +685,15 @@ function SeatTile({
   latestTake,
   isActive,
   phase,
+  isPlaying,
+  onReplay,
 }: {
   member: BoardMember;
   latestTake?: Take;
   isActive: boolean;
   phase: MeetingPhase;
+  isPlaying?: boolean;
+  onReplay?: () => void;
 }) {
   return (
     <div
@@ -654,9 +728,22 @@ function SeatTile({
       </div>
 
       {latestTake && !isActive && (
-        <p className="text-gray-400 text-xs leading-relaxed line-clamp-2">
-          {latestTake.content.slice(0, 120)}...
-        </p>
+        <div className="flex items-start gap-2">
+          <p className="text-gray-400 text-xs leading-relaxed line-clamp-2 flex-1">
+            {latestTake.content.slice(0, 120)}...
+          </p>
+          {onReplay && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onReplay(); }}
+              className={`shrink-0 p-1 rounded transition-colors ${isPlaying ? 'text-emerald-400 animate-pulse' : 'text-gray-500 hover:text-gray-300'}`}
+              title="Replay audio"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+              </svg>
+            </button>
+          )}
+        </div>
       )}
 
       {isActive && (
