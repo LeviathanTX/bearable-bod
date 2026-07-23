@@ -11,11 +11,11 @@ function getS3(): S3Client {
   return s3Client;
 }
 
-const BUCKET = process.env.S3_BUCKET_DOCUMENTS || 'preboard-documents-996596548730';
+export const DOCUMENTS_BUCKET = process.env.S3_BUCKET_DOCUMENTS || 'preboard-documents-996596548730';
 
 export async function uploadToS3(key: string, body: Buffer, contentType: string): Promise<void> {
   await getS3().send(new PutObjectCommand({
-    Bucket: BUCKET,
+    Bucket: DOCUMENTS_BUCKET,
     Key: key,
     Body: body,
     ContentType: contentType,
@@ -23,7 +23,7 @@ export async function uploadToS3(key: string, body: Buffer, contentType: string)
 }
 
 export async function getSignedDownloadUrl(key: string): Promise<string> {
-  const command = new GetObjectCommand({ Bucket: BUCKET, Key: key });
+  const command = new GetObjectCommand({ Bucket: DOCUMENTS_BUCKET, Key: key });
   return getSignedUrl(getS3(), command, { expiresIn: 3600 });
 }
 

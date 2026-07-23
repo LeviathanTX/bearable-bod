@@ -7,7 +7,8 @@ import { db, withUserContext } from '@/lib/db/client';
 import { reviewSessions, sessionTakes, sessionVotes, boardMembers, companies, objections } from '@/lib/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 
-const S3_BUCKET = process.env.S3_BUCKET_DOCUMENTS || 'preboard-documents-996596548730';
+import { DOCUMENTS_BUCKET } from '@/lib/s3';
+const S3_BUCKET = DOCUMENTS_BUCKET;
 const SYNTHESIS_MODEL = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 
 interface DeliverableResult {

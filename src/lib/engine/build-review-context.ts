@@ -102,18 +102,16 @@ export async function buildReviewContext(
 }
 
 async function findRelevantChunks(orgId: string, companyId: string, query: string): Promise<string> {
-  // Always include chunk_index=0 (deck opening) + top-K by cosine similarity
   let chunkZeroRows: { content: string }[] = [];
-  let topKRows: { content: string }[] = [];
+  let topKRows: { content: string; score?: number }[] = [];
 
-  // Get chunk 0 from most recent doc (always included)
   await withUserContext(orgId, companyId, async () => {
     const raw = await db.execute(sql`
       SELECT dc.content
       FROM document_chunks dc
       INNER JOIN documents d ON d.id = dc.document_id
       WHERE d.company_id = ${companyId}
-        AND d.status = 'ready'
+        AND d.status IN ('ready', 'partial_embeddings')
         AND dc.chunk_index = 0
       ORDER BY d.created_at DESC
       LIMIT 1
@@ -121,36 +119,51 @@ async function findRelevantChunks(orgId: string, companyId: string, query: strin
     chunkZeroRows = (raw as any) as { content: string }[];
   });
 
-  // Top-K vector search
   let queryEmbedding: number[] | null = null;
   try {
     queryEmbedding = await embedText(query);
-  } catch {
-    // Fall back to recency if embedding fails
+  } catch (e) {
+    console.warn(`[top-k] Query embed failed, falling back to recency: ${(e as Error).message}`);
   }
 
   await withUserContext(orgId, companyId, async () => {
     if (queryEmbedding) {
       const vec = vectorLiteral(queryEmbedding);
       const raw = await db.execute(sql`
-        SELECT dc.content
+        SELECT dc.content, (dc.embedding <=> ${sql.raw(`'${vec}'::vector`)}) as distance
         FROM document_chunks dc
         INNER JOIN documents d ON d.id = dc.document_id
         WHERE d.company_id = ${companyId}
-          AND d.status = 'ready'
+          AND d.status IN ('ready', 'partial_embeddings')
           AND dc.embedding IS NOT NULL
           AND dc.chunk_index != 0
         ORDER BY dc.embedding <=> ${sql.raw(`'${vec}'::vector`)}
         LIMIT 8
       `);
-      topKRows = (raw as any) as { content: string }[];
+      topKRows = (raw as any) as { content: string; distance?: number }[];
+      if (topKRows.length > 0) {
+        console.log(`[top-k] Cosine retrieval: ${topKRows.length} chunks, distances: ${topKRows.map((r: any) => (r.distance as number)?.toFixed(3)).join(', ')}`);
+      } else {
+        console.warn(`[top-k] No embedded chunks found for company ${companyId}, falling back to recency`);
+        const fallback = await db.execute(sql`
+          SELECT dc.content
+          FROM document_chunks dc
+          INNER JOIN documents d ON d.id = dc.document_id
+          WHERE d.company_id = ${companyId}
+            AND d.status IN ('ready', 'partial_embeddings')
+            AND dc.chunk_index != 0
+          ORDER BY d.created_at DESC, dc.chunk_index ASC
+          LIMIT 8
+        `);
+        topKRows = (fallback as any) as { content: string }[];
+      }
     } else {
       const raw = await db.execute(sql`
         SELECT dc.content
         FROM document_chunks dc
         INNER JOIN documents d ON d.id = dc.document_id
         WHERE d.company_id = ${companyId}
-          AND d.status = 'ready'
+          AND d.status IN ('ready', 'partial_embeddings')
           AND dc.chunk_index != 0
         ORDER BY d.created_at DESC, dc.chunk_index ASC
         LIMIT 8

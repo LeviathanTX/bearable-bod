@@ -7,6 +7,8 @@ import { uploadToS3, buildS3Key } from '@/lib/s3';
 import { processDocument } from '@/lib/engine/document-processor';
 import { embedText } from '@/lib/ai/embeddings';
 
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await resolveSession();
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -42,22 +44,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }).returning()
   );
 
-  // Process async (in-request for now; could move to background)
   try {
     const processed = await processDocument(buffer, file.type);
+    let embedFailures = 0;
 
     await withUserContext(session.orgId, companyScope, async () => {
-      await db.update(documents).set({
-        contentText: processed.text.slice(0, 100000),
-        status: 'ready',
-        updatedAt: new Date(),
-      }).where(eq(documents.id, docRow[0].id));
-
       for (let i = 0; i < processed.chunks.length; i++) {
         let embedding: number[] | null = null;
         try {
           embedding = await embedText(processed.chunks[i]);
-        } catch { /* store without embedding */ }
+        } catch (embedErr) {
+          embedFailures++;
+          console.error(`[embed-fail] doc=${docRow[0].id} chunk=${i} error=${(embedErr as Error).message}`);
+        }
 
         await db.insert(documentChunks).values({
           documentId: docRow[0].id,
@@ -67,8 +66,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           tokenCount: Math.ceil(processed.chunks[i].length / 4),
         });
       }
+
+      const status = embedFailures === 0 ? 'ready'
+        : embedFailures < processed.chunks.length ? 'partial_embeddings'
+        : 'no_embeddings';
+
+      await db.update(documents).set({
+        contentText: processed.text.slice(0, 100000),
+        status,
+        updatedAt: new Date(),
+      }).where(eq(documents.id, docRow[0].id));
     });
+
+    if (embedFailures > 0) {
+      console.warn(`[doc-upload] ${embedFailures}/${processed.chunks.length} chunks failed embedding for doc ${docRow[0].id}`);
+    }
   } catch (err) {
+    console.error(`[doc-upload] Processing failed for doc ${docRow[0].id}:`, err);
     await withUserContext(session.orgId, companyScope, () =>
       db.update(documents).set({ status: 'failed', updatedAt: new Date() })
         .where(eq(documents.id, docRow[0].id))
