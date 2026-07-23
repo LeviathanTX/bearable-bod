@@ -296,6 +296,28 @@ export const mcpConnectors = pgTable('mcp_connectors', {
   index('mcp_connectors_org_idx').on(t.orgId),
 ]);
 
+export const deliverableRevisions = pgTable('deliverable_revisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => orgs.id),
+  sessionId: uuid('session_id').notNull().references(() => reviewSessions.id),
+  deliverableType: text('deliverable_type').notNull(),
+  originalS3Key: text('original_s3_key').notNull(),
+  editedS3Key: text('edited_s3_key'),
+  uploadedBy: uuid('uploaded_by').references(() => users.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+export const orgStyleNotes = pgTable('org_style_notes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => orgs.id),
+  note: text('note').notNull(),
+  sourceRevisionId: uuid('source_revision_id').references(() => deliverableRevisions.id),
+  archived: boolean('archived').default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('org_style_notes_org_idx').on(t.orgId),
+]);
+
 export const appEvents = pgTable('app_events', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').references(() => orgs.id),
