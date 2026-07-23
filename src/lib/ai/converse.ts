@@ -62,14 +62,55 @@ export async function converseJson<T = unknown>(opts: ConverseJsonOptions): Prom
   const result = await converse({
     ...opts,
     messages: [{ role: 'user', content: opts.userMessage }],
+    maxTokens: opts.maxTokens || 8192,
     temperature: 0.3,
   });
 
-  const jsonMatch = result.content.match(/```json\s*([\s\S]*?)```/) ||
-    result.content.match(/\[[\s\S]*\]/) ||
-    result.content.match(/\{[\s\S]*\}/);
+  const text = result.content;
 
-  const raw = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : result.content;
-  const data = JSON.parse(raw) as T;
+  // Try fenced code block first (closed or unclosed)
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch) {
+    const data = JSON.parse(fenceMatch[1].trim()) as T;
+    return { data, tokensUsed: result.tokensUsed };
+  }
+
+  // If fence is opened but not closed (token limit hit), extract content after the opening fence
+  const openFenceMatch = text.match(/```(?:json)?\s*([\s\S]*)/);
+  if (openFenceMatch) {
+    const inner = openFenceMatch[1].trim();
+    const data = extractJson<T>(inner);
+    return { data, tokensUsed: result.tokensUsed };
+  }
+
+  const data = extractJson<T>(text);
   return { data, tokensUsed: result.tokensUsed };
+}
+
+function extractJson<T>(text: string): T {
+  const startIdx = text.search(/[\[{]/);
+  if (startIdx === -1) throw new Error('No JSON found in response');
+
+  const openChar = text[startIdx];
+  const closeChar = openChar === '[' ? ']' : '}';
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = startIdx; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\' && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === openChar) depth++;
+    if (ch === closeChar) {
+      depth--;
+      if (depth === 0) {
+        return JSON.parse(text.slice(startIdx, i + 1)) as T;
+      }
+    }
+  }
+
+  return JSON.parse(text) as T;
 }
