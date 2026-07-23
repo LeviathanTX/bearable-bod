@@ -83,6 +83,9 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
       const { session } = await res.json();
       setSessionId(session.id);
       startPolling(session.id);
+
+      // Trigger deliberation (runs synchronously on server, client polls for progress)
+      fetch(`/api/sessions/${session.id}/run`, { method: 'POST' }).catch(() => {});
     } catch (err: any) {
       setError(err.message);
       setPhase('setup');

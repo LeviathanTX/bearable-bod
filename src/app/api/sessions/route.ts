@@ -3,7 +3,6 @@ import { resolveSession } from '@/lib/auth/session';
 import { db, withUserContext } from '@/lib/db/client';
 import { reviewSessions, orgs } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
-import { runDeliberation } from '@/lib/engine/deliberate';
 import { checkAiCallCap } from '@/lib/rate-limit';
 
 export async function POST(req: NextRequest) {
@@ -46,11 +45,6 @@ export async function POST(req: NextRequest) {
         seatIds,
       }).returning()
     );
-
-    // Run deliberation in background
-    runDeliberation(session.orgId, sessionRow[0].id, dailyCap).catch((err) => {
-      console.error('Deliberation failed:', err);
-    });
 
     return NextResponse.json({ session: sessionRow[0] }, { status: 201 });
   } catch (err: any) {

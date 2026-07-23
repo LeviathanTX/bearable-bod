@@ -1,7 +1,7 @@
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
 import { getAwsClientConfig } from '@/lib/aws-config';
 
-const DEFAULT_MODEL = 'us.anthropic.claude-sonnet-4-6-v1:0';
+const DEFAULT_MODEL = 'us.anthropic.claude-sonnet-4-6';
 
 let bedrockClient: BedrockRuntimeClient | null = null;
 
