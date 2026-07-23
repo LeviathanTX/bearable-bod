@@ -112,5 +112,57 @@ function extractJson<T>(text: string): T {
     }
   }
 
-  return JSON.parse(text) as T;
+  // Truncated output — try to salvage by closing open structures
+  const partial = text.slice(startIdx);
+  const repaired = repairTruncatedJson(partial, openChar);
+  return JSON.parse(repaired) as T;
+}
+
+function repairTruncatedJson(text: string, rootChar: string): string {
+  // Find last complete element boundary (end of an object/string before truncation)
+  let lastSafe = -1;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\' && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{' || ch === '[') depth++;
+    if (ch === '}' || ch === ']') {
+      depth--;
+      if (depth === 1 && rootChar === '[') lastSafe = i;
+      if (depth === 0) lastSafe = i;
+    }
+    if (ch === ',' && depth === 1 && rootChar === '[') lastSafe = i - 1;
+  }
+
+  if (lastSafe > 0) {
+    // Trim to last safe point and close the root structure
+    let trimmed = text.slice(0, lastSafe + 1);
+    // Remove trailing comma if present
+    trimmed = trimmed.replace(/,\s*$/, '');
+    const closeChar = rootChar === '[' ? ']' : '}';
+    // Count remaining open brackets
+    let opens = 0;
+    inString = false;
+    escape = false;
+    for (let i = 0; i < trimmed.length; i++) {
+      const ch = trimmed[i];
+      if (escape) { escape = false; continue; }
+      if (ch === '\\' && inString) { escape = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === rootChar) opens++;
+      if (ch === closeChar) opens--;
+    }
+    for (let i = 0; i < opens; i++) trimmed += closeChar;
+    return trimmed;
+  }
+
+  // Can't salvage — return empty array/object
+  return rootChar === '[' ? '[]' : '{}';
 }
