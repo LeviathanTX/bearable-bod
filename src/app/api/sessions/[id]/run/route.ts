@@ -28,6 +28,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (rows.length === 0) return NextResponse.json({ error: 'Session not found' }, { status: 404 });
     if (rows[0].status === 'complete') return NextResponse.json({ session: rows[0], phase: 'complete' });
 
+    // Resume stalled sessions
+    if (rows[0].status === 'stalled') {
+      await withUserContext(session.orgId, companyScope, () =>
+        db.update(reviewSessions)
+          .set({ status: 'active', updatedAt: new Date() })
+          .where(eq(reviewSessions.id, id))
+      );
+    }
+
     const orgRows = await db.select({ dailyAiCallCap: orgs.dailyAiCallCap })
       .from(orgs).where(eq(orgs.id, session.orgId)).limit(1);
     const dailyCap = orgRows[0]?.dailyAiCallCap || 200;

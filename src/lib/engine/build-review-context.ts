@@ -2,6 +2,7 @@ import { db, sql, withUserContext } from '@/lib/db/client';
 import { companies, objections, reviewSessions, companyMemory, documentChunks, documents, outcomeLogs } from '@/lib/db/schema';
 import { eq, and, ne, desc } from 'drizzle-orm';
 import { fetchScoredMemory } from './company-memory';
+import { embedText, vectorLiteral } from '@/lib/ai/embeddings';
 
 export interface ReviewContext {
   company: {
@@ -99,10 +100,11 @@ export async function buildReviewContext(
 }
 
 async function findRelevantChunks(orgId: string, companyId: string, query: string): Promise<string> {
-  // Always include uploaded document content — the user uploaded it for this review.
-  // Use recency-ordered retrieval (most recent docs first), no similarity threshold.
-  let rows: { content: string }[] = [];
+  // Always include chunk_index=0 (deck opening) + top-K by cosine similarity
+  let chunkZeroRows: { content: string }[] = [];
+  let topKRows: { content: string }[] = [];
 
+  // Get chunk 0 from most recent doc (always included)
   await withUserContext(orgId, companyId, async () => {
     const raw = await db.execute(sql`
       SELECT dc.content
@@ -110,12 +112,52 @@ async function findRelevantChunks(orgId: string, companyId: string, query: strin
       INNER JOIN documents d ON d.id = dc.document_id
       WHERE d.company_id = ${companyId}
         AND d.status = 'ready'
-      ORDER BY d.created_at DESC, dc.chunk_index ASC
-      LIMIT 12
+        AND dc.chunk_index = 0
+      ORDER BY d.created_at DESC
+      LIMIT 1
     `);
-    rows = (raw as any) as { content: string }[];
+    chunkZeroRows = (raw as any) as { content: string }[];
   });
 
-  if (rows.length === 0) return '';
-  return rows.map((r) => r.content.slice(0, 800)).join('\n---\n');
+  // Top-K vector search
+  let queryEmbedding: number[] | null = null;
+  try {
+    queryEmbedding = await embedText(query);
+  } catch {
+    // Fall back to recency if embedding fails
+  }
+
+  await withUserContext(orgId, companyId, async () => {
+    if (queryEmbedding) {
+      const vec = vectorLiteral(queryEmbedding);
+      const raw = await db.execute(sql`
+        SELECT dc.content
+        FROM document_chunks dc
+        INNER JOIN documents d ON d.id = dc.document_id
+        WHERE d.company_id = ${companyId}
+          AND d.status = 'ready'
+          AND dc.embedding IS NOT NULL
+          AND dc.chunk_index != 0
+        ORDER BY dc.embedding <=> ${sql.raw(`'${vec}'::vector`)}
+        LIMIT 8
+      `);
+      topKRows = (raw as any) as { content: string }[];
+    } else {
+      const raw = await db.execute(sql`
+        SELECT dc.content
+        FROM document_chunks dc
+        INNER JOIN documents d ON d.id = dc.document_id
+        WHERE d.company_id = ${companyId}
+          AND d.status = 'ready'
+          AND dc.chunk_index != 0
+        ORDER BY d.created_at DESC, dc.chunk_index ASC
+        LIMIT 8
+      `);
+      topKRows = (raw as any) as { content: string }[];
+    }
+  });
+
+  const allRows = [...chunkZeroRows, ...topKRows];
+  if (allRows.length === 0) return '';
+  return allRows.map((r) => r.content.slice(0, 800)).join('\n---\n');
 }

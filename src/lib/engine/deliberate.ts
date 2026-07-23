@@ -4,9 +4,14 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { converse, converseJson } from '@/lib/ai/converse';
 import { buildReviewContext, ReviewContext } from './build-review-context';
 import { storeMemory } from './company-memory';
-import { embedText, vectorLiteral } from '@/lib/ai/embeddings';
+import { embedText } from '@/lib/ai/embeddings';
 import { checkAiCallCap } from '@/lib/rate-limit';
 import { sql } from 'drizzle-orm';
+
+// Per-seat model: Sonnet preferred for quality; falls back to Haiku if timing exceeds ceiling
+const DEFAULT_SEAT_MODEL = 'us.anthropic.claude-sonnet-4-6-v1:0';
+const EXTRACTION_MODEL = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
+const SYNTHESIS_MODEL = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 
 interface BoardMemberRow {
   id: string;
@@ -255,7 +260,7 @@ async function runInterrogation(
   const userMessage = buildContextMessage(context, query);
 
   const result = await converse({
-    model: seat.model || 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+    model: seat.model || DEFAULT_SEAT_MODEL,
     systemPrompt,
     messages: [{ role: 'user', content: userMessage }],
     maxTokens: 800,
@@ -291,7 +296,7 @@ async function runAdvise(
   const userMessage = `Your interrogation:\n${myInterrogation}\n\nAll raised objections:\n${objectionSummary}\n\nNow advise the founder: what specifically fixes your objections and strengthens their position?`;
 
   const result = await converse({
-    model: seat.model || 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+    model: seat.model || DEFAULT_SEAT_MODEL,
     systemPrompt,
     messages: [{ role: 'user', content: userMessage }],
     maxTokens: 800,
@@ -324,40 +329,72 @@ async function extractObjections(
   }).join('\n\n');
 
   const { data: extracted } = await converseJson<ExtractedObjection[]>({
-    model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+    model: EXTRACTION_MODEL,
     maxTokens: 2000,
     systemPrompt: `Extract objections from board interrogations. Return a JSON array. Each item: { "title": "short title", "detail": "one sentence", "severity": "deal_killer"|"major"|"minor", "lens": "the committee role raising it", "boardMemberId": "the seat ID" }. Only include genuine objections, not positive feedback. Maximum 20 objections total.`,
     userMessage: `Seats and their IDs:\n${seats.map((s) => `${s.id}: ${s.name} (${s.committeeRole})`).join('\n')}\n\nInterrogation transcripts:\n${combined}`,
   });
 
-  // Dedupe against existing objections
+  // Dedupe: embed all new objection titles in parallel, compare against existing
   const existingObjections = await withUserContext(orgId, companyId, () =>
     db.select().from(objections)
       .where(and(eq(objections.companyId, companyId)))
   );
 
-  for (const obj of extracted) {
+  const unresolvedExisting = existingObjections.filter((o) => o.state !== 'resolved');
+
+  // Batch embed: new titles + existing titles in parallel
+  let newEmbeddings: (number[] | null)[] = [];
+  let existingEmbeddings: (number[] | null)[] = [];
+
+  if (unresolvedExisting.length > 0) {
+    try {
+      const [newEmbs, existEmbs] = await Promise.all([
+        Promise.all(extracted.map((o) => embedText(o.title).catch(() => null))),
+        Promise.all(unresolvedExisting.map((o) => embedText(o.title).catch(() => null))),
+      ]);
+      newEmbeddings = newEmbs;
+      existingEmbeddings = existEmbs;
+    } catch {
+      // Keyword fallback below
+    }
+  }
+
+  for (let i = 0; i < extracted.length; i++) {
+    const obj = extracted[i];
     let isDuplicate = false;
 
-    if (existingObjections.length > 0) {
-      try {
-        for (const existing of existingObjections) {
-          if (existing.state === 'resolved') continue;
-          const titleOverlap = obj.title.toLowerCase().includes(existing.title.toLowerCase().split(' ')[0]);
-          if (titleOverlap) {
-            const history = (existing.stateHistory as any[]) || [];
-            history.push({ state: existing.state, sessionId, note: 'Re-raised in session', at: new Date().toISOString() });
-            await withUserContext(orgId, companyId, () =>
-              db.update(objections)
-                .set({ lastReviewedIn: sessionId, stateHistory: history, updatedAt: new Date() })
-                .where(eq(objections.id, existing.id))
-            );
-            isDuplicate = true;
-            break;
-          }
+    if (unresolvedExisting.length > 0) {
+      const newEmb = newEmbeddings[i];
+
+      for (let j = 0; j < unresolvedExisting.length; j++) {
+        const existing = unresolvedExisting[j];
+        let similar = false;
+
+        // Embedding-based dedup (threshold 0.85)
+        if (newEmb && existingEmbeddings[j]) {
+          const sim = cosineSimilarity(newEmb, existingEmbeddings[j]!);
+          similar = sim >= 0.85;
         }
-      } catch {
-        // proceed without dedup
+
+        // Keyword fallback if embeddings unavailable
+        if (!newEmb || !existingEmbeddings[j]) {
+          const words = existing.title.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+          const newLower = obj.title.toLowerCase();
+          similar = words.filter((w) => newLower.includes(w)).length >= 2;
+        }
+
+        if (similar) {
+          const history = (existing.stateHistory as any[]) || [];
+          history.push({ state: existing.state, sessionId, note: 'Re-raised in session', at: new Date().toISOString() });
+          await withUserContext(orgId, companyId, () =>
+            db.update(objections)
+              .set({ lastReviewedIn: sessionId, stateHistory: history, updatedAt: new Date() })
+              .where(eq(objections.id, existing.id))
+          );
+          isDuplicate = true;
+          break;
+        }
       }
     }
 
@@ -383,6 +420,24 @@ async function extractObjections(
   return extracted;
 }
 
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0, magA = 0, magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+}
+
+interface SynthesisOutput {
+  agreements: string[];
+  disagreements: string[];
+  punchList: { title: string; lens: string; severity: string; fix: string; deadline?: string }[];
+  readinessNote: string;
+  objectionUpdates: { title: string; newState: string; reason: string }[];
+}
+
 async function runChairSynthesis(
   orgId: string,
   sessionId: string,
@@ -392,64 +447,68 @@ async function runChairSynthesis(
   adviseResults: { boardMemberId: string; content: string }[],
   allObjections: ExtractedObjection[],
 ): Promise<string> {
-  const systemPrompt = `You are the Chair synthesizing a board review session. Your job:
-1. Identify where board members AGREE and where they DISAGREE (surface disagreements explicitly, never average them away)
-2. Produce an updated punch list ranked by severity (deal_killers first)
-3. Write a one-paragraph readiness note assessing this company's current state
-4. For each existing open objection, mark whether it should be: addressed, resolved, or still_weak
-
-Format your response as:
-## Agreements
-...
-## Disagreements
-...
-## Punch List
-1. [severity] title - what fixes it
-...
-## Readiness Note
-...
-## Objection Status Updates
-- "objection title" -> new_state (reason)
-...`;
-
   const interrogationText = interrogations.map((r) => r.content).join('\n---\n');
   const adviseText = adviseResults.map((r) => r.content).join('\n---\n');
 
-  const result = await converse({
-    model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-    systemPrompt,
-    messages: [{
-      role: 'user',
-      content: `Company: ${context.company.name}\nStage: ${context.company.stage}\n\nInterrogation phase:\n${interrogationText}\n\nAdvise phase:\n${adviseText}\n\nCurrent objections:\n${context.openObjections}`,
-    }],
-    maxTokens: 1200,
-    temperature: 0.5,
+  const { data: synthesis } = await converseJson<SynthesisOutput>({
+    model: SYNTHESIS_MODEL,
+    maxTokens: 2000,
+    systemPrompt: `You are the Chair synthesizing a board review session. Return a JSON object with this exact structure:
+{
+  "agreements": ["string - areas where board members agree"],
+  "disagreements": ["string - areas where board members disagree, never averaged away"],
+  "punchList": [{"title": "short title", "lens": "which role", "severity": "deal_killer|major|minor", "fix": "what specifically fixes it", "deadline": "optional timeframe"}],
+  "readinessNote": "one paragraph assessing current state",
+  "objectionUpdates": [{"title": "objection title", "newState": "addressed|resolved|still_weak", "reason": "why"}]
+}
+Rank punchList by severity (deal_killers first). Surface disagreements explicitly.`,
+    userMessage: `Company: ${context.company.name}\nStage: ${context.company.stage}\n\nInterrogation phase:\n${interrogationText}\n\nAdvise phase:\n${adviseText}\n\nCurrent objections:\n${context.openObjections}`,
   });
 
-  const punchListMatch = result.content.match(/## Punch List\n([\s\S]*?)(?=\n## |$)/);
-  const punchItems = punchListMatch ? punchListMatch[1].trim().split('\n').filter(Boolean) : [];
-
-  const readinessMatch = result.content.match(/## Readiness Note\n([\s\S]*?)(?=\n## |$)/);
-  const readinessNote = readinessMatch ? readinessMatch[1].trim() : null;
+  // Build human-readable synthesis text from structured data
+  const synthText = formatSynthesis(synthesis, context.company.name);
 
   await withUserContext(orgId, companyId, async () => {
     await db.update(reviewSessions).set({
       phase: 'synthesized',
       status: 'complete',
-      synthesis: result.content,
-      punchList: punchItems,
+      synthesis: synthText,
+      punchList: synthesis.punchList,
       updatedAt: new Date(),
     }).where(eq(reviewSessions.id, sessionId));
 
-    if (readinessNote) {
+    if (synthesis.readinessNote) {
       await db.update(companies).set({
-        readinessNote,
+        readinessNote: synthesis.readinessNote,
         updatedAt: new Date(),
       }).where(eq(companies.id, companyId));
     }
   });
 
-  return result.content;
+  return synthText;
+}
+
+function formatSynthesis(s: SynthesisOutput, companyName: string): string {
+  const lines: string[] = [`# ${companyName} - Board Synthesis\n`];
+
+  lines.push('## Agreements');
+  s.agreements.forEach((a) => lines.push(`- ${a}`));
+
+  lines.push('\n## Disagreements');
+  s.disagreements.forEach((d) => lines.push(`- ${d}`));
+
+  lines.push('\n## Punch List');
+  s.punchList.forEach((p, i) => lines.push(`${i + 1}. [${p.severity}] ${p.title} (${p.lens}) - ${p.fix}${p.deadline ? ` [${p.deadline}]` : ''}`));
+
+  lines.push('\n## Readiness Note');
+  lines.push(s.readinessNote);
+
+  if (s.objectionUpdates.length > 0) {
+    lines.push('\n## Objection Status Updates');
+    s.objectionUpdates.forEach((u) => lines.push(`- "${u.title}" -> ${u.newState} (${u.reason})`));
+  }
+
+  return lines.join('\n');
 }
 
 function buildSeatSystemPrompt(seat: BoardMemberRow, phase: 'interrogate' | 'advise'): string {
