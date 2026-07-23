@@ -324,7 +324,9 @@ async function extractObjections(
   }).join('\n\n');
 
   const { data: extracted } = await converseJson<ExtractedObjection[]>({
-    systemPrompt: `Extract objections from board interrogations. Return a JSON array. Each item: { "title": "short title", "detail": "explanation", "severity": "deal_killer"|"major"|"minor", "lens": "the committee role raising it", "boardMemberId": "the seat ID" }. Only include genuine objections, not positive feedback.`,
+    model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+    maxTokens: 2000,
+    systemPrompt: `Extract objections from board interrogations. Return a JSON array. Each item: { "title": "short title", "detail": "one sentence", "severity": "deal_killer"|"major"|"minor", "lens": "the committee role raising it", "boardMemberId": "the seat ID" }. Only include genuine objections, not positive feedback. Maximum 20 objections total.`,
     userMessage: `Seats and their IDs:\n${seats.map((s) => `${s.id}: ${s.name} (${s.committeeRole})`).join('\n')}\n\nInterrogation transcripts:\n${combined}`,
   });
 
@@ -414,12 +416,13 @@ Format your response as:
   const adviseText = adviseResults.map((r) => r.content).join('\n---\n');
 
   const result = await converse({
+    model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
     systemPrompt,
     messages: [{
       role: 'user',
       content: `Company: ${context.company.name}\nStage: ${context.company.stage}\n\nInterrogation phase:\n${interrogationText}\n\nAdvise phase:\n${adviseText}\n\nCurrent objections:\n${context.openObjections}`,
     }],
-    maxTokens: 3000,
+    maxTokens: 1200,
     temperature: 0.5,
   });
 
