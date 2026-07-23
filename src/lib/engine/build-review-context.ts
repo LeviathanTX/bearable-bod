@@ -2,7 +2,6 @@ import { db, sql, withUserContext } from '@/lib/db/client';
 import { companies, objections, reviewSessions, companyMemory, documentChunks, documents, outcomeLogs } from '@/lib/db/schema';
 import { eq, and, ne, desc } from 'drizzle-orm';
 import { fetchScoredMemory } from './company-memory';
-import { embedText, vectorLiteral } from '@/lib/ai/embeddings';
 
 export interface ReviewContext {
   company: {
@@ -100,42 +99,23 @@ export async function buildReviewContext(
 }
 
 async function findRelevantChunks(orgId: string, companyId: string, query: string): Promise<string> {
-  // Check if company has any ready documents before calling embedding API
-  const docCount = await withUserContext(orgId, companyId, async () => {
-    const raw = await db.execute(sql`
-      SELECT count(*)::int AS cnt FROM documents
-      WHERE company_id = ${companyId} AND status = 'ready'
-    `);
-    return ((raw as any)[0]?.cnt ?? 0) as number;
-  });
-
-  if (docCount === 0) return '';
-
-  let queryEmbedding: number[] | null = null;
-  try {
-    queryEmbedding = await embedText(query);
-  } catch {
-    return '';
-  }
-
-  const vec = vectorLiteral(queryEmbedding);
-  let rows: { content: string; similarity: number }[] = [];
+  // Always include uploaded document content — the user uploaded it for this review.
+  // Use recency-ordered retrieval (most recent docs first), no similarity threshold.
+  let rows: { content: string }[] = [];
 
   await withUserContext(orgId, companyId, async () => {
     const raw = await db.execute(sql`
-      SELECT dc.content, 1 - (dc.embedding <=> ${sql.raw(`'${vec}'::vector`)}) AS similarity
+      SELECT dc.content
       FROM document_chunks dc
       INNER JOIN documents d ON d.id = dc.document_id
       WHERE d.company_id = ${companyId}
         AND d.status = 'ready'
-        AND dc.embedding IS NOT NULL
-        AND 1 - (dc.embedding <=> ${sql.raw(`'${vec}'::vector`)}) > 0.6
-      ORDER BY dc.embedding <=> ${sql.raw(`'${vec}'::vector`)}
-      LIMIT 8
+      ORDER BY d.created_at DESC, dc.chunk_index ASC
+      LIMIT 12
     `);
-    rows = (raw as any) as { content: string; similarity: number }[];
+    rows = (raw as any) as { content: string }[];
   });
 
   if (rows.length === 0) return '';
-  return rows.map((r) => r.content.slice(0, 400)).join('\n---\n');
+  return rows.map((r) => r.content.slice(0, 800)).join('\n---\n');
 }
