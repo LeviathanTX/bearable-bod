@@ -47,7 +47,7 @@ export default async function DashboardPage() {
       {/* Getting started guide for empty orgs */}
       {session.orgRole === 'operator' && !hasBoard && (
         <div className="bg-gradient-to-br from-emerald-50 to-blue-50 border border-emerald-200 rounded-xl p-6">
-          <h2 className="text-lg font-medium text-gray-900 mb-2">Welcome to PreBoard</h2>
+          <h2 className="text-lg font-medium text-gray-900 mb-2">Welcome to Bearable BoD</h2>
           <p className="text-sm text-gray-600 mb-4">
             Get started by assembling your advisory board from our template library, then add a company to review.
           </p>

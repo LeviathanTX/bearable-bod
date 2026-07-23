@@ -14,7 +14,7 @@ export async function POST(req: NextRequest) {
   }
 
   const orgRows = await db.select().from(orgs).where(eq(orgs.id, session.orgId)).limit(1);
-  const orgName = orgRows[0]?.brandName || orgRows[0]?.name || 'PreBoard';
+  const orgName = orgRows[0]?.brandName || orgRows[0]?.name || 'Bearable BoD';
 
   await sendFounderInvite(email, session.orgId, companyId, orgName);
   return NextResponse.json({ ok: true }, { status: 201 });

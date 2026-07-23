@@ -1,13 +1,14 @@
 import type { Metadata } from "next";
 import { Inter, Space_Grotesk } from "next/font/google";
+import { BRAND_NAME } from "@/lib/brand";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 const spaceGrotesk = Space_Grotesk({ subsets: ["latin"], variable: "--font-display" });
 
 export const metadata: Metadata = {
-  title: "PreBoard",
-  description: "AI-powered pitch review platform",
+  title: BRAND_NAME,
+  description: "AI-powered governance simulation platform",
 };
 
 export default function RootLayout({

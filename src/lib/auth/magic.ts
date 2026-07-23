@@ -3,6 +3,7 @@ import { magicTokens, users, orgs, orgMembers } from '@/lib/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { generateToken, hashToken, createSession } from './session';
 import { sendEmail } from '@/lib/email/ses';
+import { BRAND_NAME } from '@/lib/brand';
 
 const MAGIC_LINK_EXPIRY_MS = 15 * 60 * 1000;
 const INVITE_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
@@ -28,8 +29,8 @@ export async function sendMagicLink(email: string): Promise<void> {
 
   await sendEmail({
     to: email,
-    subject: 'Sign in to PreBoard',
-    html: `<p>Click the link below to sign in:</p><p><a href="${url}">Sign in to PreBoard</a></p><p>This link expires in 15 minutes.</p>`,
+    subject: `Sign in to ${BRAND_NAME}`,
+    html: `<p>Click the link below to sign in:</p><p><a href="${url}">Sign in to ${BRAND_NAME}</a></p><p>This link expires in 15 minutes.</p>`,
   });
 }
 
@@ -57,7 +58,7 @@ export async function sendFounderInvite(
   await sendEmail({
     to: email,
     subject: `You've been invited to ${orgName}`,
-    html: `<p>You've been invited to join ${orgName} on PreBoard.</p><p><a href="${url}">Accept invitation</a></p><p>This link expires in 7 days.</p>`,
+    html: `<p>You've been invited to join ${orgName} on ${BRAND_NAME}.</p><p><a href="${url}">Accept invitation</a></p><p>This link expires in 7 days.</p>`,
   });
 }
 

@@ -42,7 +42,7 @@ export default function AuthPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="max-w-md w-full p-8 bg-white rounded-lg shadow-sm border border-gray-200">
-        <h1 className="text-2xl font-display font-semibold text-gray-900 mb-2">Sign in to PreBoard</h1>
+        <h1 className="text-2xl font-display font-semibold text-gray-900 mb-2">Sign in to Bearable BoD</h1>
         <p className="text-gray-600 mb-6">Enter your email to receive a sign-in link.</p>
 
         <form onSubmit={handleSubmit} className="space-y-4">

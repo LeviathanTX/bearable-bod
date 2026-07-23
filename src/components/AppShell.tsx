@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { SessionUser } from '@/lib/auth/session';
+import { Wordmark } from './Wordmark';
 
 interface Props {
   session: SessionUser;
@@ -29,7 +30,7 @@ export function AppShell({ session, children }: Props) {
       <header className="bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-14">
           <div className="flex items-center gap-8">
-            <span className="font-display font-semibold text-lg text-gray-900">PreBoard</span>
+            <Wordmark />
             <nav className="flex gap-1">
               {nav.map((item) => (
                 <Link

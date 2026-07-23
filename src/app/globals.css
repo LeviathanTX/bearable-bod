@@ -4,6 +4,7 @@
   --color-ink: #101418;
   --color-surface: #FFFFFF;
   --color-accent: var(--org-accent, #0E7C66);
+  --brand-name: "Bearable BoD";
   --font-sans: var(--font-inter), system-ui, sans-serif;
   --font-display: var(--font-display), system-ui, sans-serif;
 }
