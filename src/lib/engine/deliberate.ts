@@ -9,7 +9,7 @@ import { checkAiCallCap } from '@/lib/rate-limit';
 import { sql } from 'drizzle-orm';
 
 // Per-seat model: Sonnet preferred for quality; falls back to Haiku if timing exceeds ceiling
-const DEFAULT_SEAT_MODEL = 'us.anthropic.claude-sonnet-4-6-v1:0';
+const DEFAULT_SEAT_MODEL = 'us.anthropic.claude-sonnet-4-6';
 const EXTRACTION_MODEL = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 const SYNTHESIS_MODEL = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 
