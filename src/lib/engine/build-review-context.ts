@@ -100,6 +100,17 @@ export async function buildReviewContext(
 }
 
 async function findRelevantChunks(orgId: string, companyId: string, query: string): Promise<string> {
+  // Check if company has any ready documents before calling embedding API
+  const docCount = await withUserContext(orgId, companyId, async () => {
+    const raw = await db.execute(sql`
+      SELECT count(*)::int AS cnt FROM documents
+      WHERE company_id = ${companyId} AND status = 'ready'
+    `);
+    return ((raw as any)[0]?.cnt ?? 0) as number;
+  });
+
+  if (docCount === 0) return '';
+
   let queryEmbedding: number[] | null = null;
   try {
     queryEmbedding = await embedText(query);

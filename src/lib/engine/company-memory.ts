@@ -13,6 +13,16 @@ export async function fetchScoredMemory(
   companyId: string,
   query: string,
 ): Promise<string> {
+  // Check if any memory exists before calling embedding API
+  const memCount = await withUserContext(orgId, companyId, async () => {
+    const raw = await db.execute(sql`
+      SELECT count(*)::int AS cnt FROM company_memory
+      WHERE company_id = ${companyId} AND archived = false
+    `);
+    return ((raw as any)[0]?.cnt ?? 0) as number;
+  });
+  if (memCount === 0) return '';
+
   let queryEmbedding: number[] | null = null;
   try {
     queryEmbedding = await embedText(query);

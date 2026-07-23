@@ -255,10 +255,10 @@ async function runInterrogation(
   const userMessage = buildContextMessage(context, query);
 
   const result = await converse({
-    model: seat.model || undefined,
+    model: seat.model || 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
     systemPrompt,
     messages: [{ role: 'user', content: userMessage }],
-    maxTokens: 2048,
+    maxTokens: 800,
     temperature: 0.7,
   });
 
@@ -291,10 +291,10 @@ async function runAdvise(
   const userMessage = `Your interrogation:\n${myInterrogation}\n\nAll raised objections:\n${objectionSummary}\n\nNow advise the founder: what specifically fixes your objections and strengthens their position?`;
 
   const result = await converse({
-    model: seat.model || undefined,
+    model: seat.model || 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
     systemPrompt,
     messages: [{ role: 'user', content: userMessage }],
-    maxTokens: 2048,
+    maxTokens: 800,
     temperature: 0.7,
   });
 
@@ -455,10 +455,10 @@ function buildSeatSystemPrompt(seat: BoardMemberRow, phase: 'interrogate' | 'adv
   const style = seat.interrogationStyle ? `\n\nYour style: ${seat.interrogationStyle}` : '';
 
   if (phase === 'interrogate') {
-    return `${persona}${context}${style}\n\nYou are on a buying committee. Interrogate this pitch the way you would in committee. Raise your objections explicitly, each with a severity (deal_killer, major, or minor). Be specific about what concerns you and why. Do not be sycophantic.`;
+    return `${persona}${context}${style}\n\nYou are on a buying committee. Interrogate this pitch. For each concern, state: severity (deal_killer/major/minor), title, and 1-2 sentence explanation. Be direct, no preamble. Maximum 6 objections.`;
   }
 
-  return `${persona}${context}${style}\n\nYou just interrogated this pitch. Now advise the founder: what specifically fixes your objections? Be constructive but honest.`;
+  return `${persona}${context}${style}\n\nYou just interrogated this pitch. Now advise the founder: for each of your objections, state the specific fix in 1-2 sentences. Be direct, no preamble.`;
 }
 
 function buildContextMessage(context: ReviewContext, query: string): string {
