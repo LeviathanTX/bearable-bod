@@ -29,7 +29,7 @@ interface SessionData {
   mode: string;
 }
 
-type MeetingPhase = 'setup' | 'interrogating' | 'advising' | 'synthesizing' | 'complete';
+type MeetingPhase = 'setup' | 'interrogating' | 'cross_examining' | 'advising' | 'voting' | 'synthesizing' | 'complete';
 
 interface Props {
   companyId: string;
@@ -134,60 +134,50 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
       setSpeakerLabel(null);
     };
 
-    // Phase 1: Interrogate — one seat at a time
-    setPhase('interrogating');
-    for (let i = 0; i < selectedSeats.length; i++) {
-      if (abortRef.current) return;
-      const seatId = selectedSeats[i];
-      const member = boardMembers.find((m) => m.id === seatId);
-      revealSeat(seatId, `${member?.name || 'Advisor'} is speaking...`);
+    const drivePhase = async (
+      phaseName: MeetingPhase,
+      apiPhase: string,
+      labelFn: (name: string) => string,
+    ) => {
+      setPhase(phaseName);
+      for (let i = 0; i < selectedSeats.length; i++) {
+        if (abortRef.current) return true;
+        const seatId = selectedSeats[i];
+        const member = boardMembers.find((m) => m.id === seatId);
+        revealSeat(seatId, labelFn(member?.name || 'Advisor'));
 
-      const { done } = await runOneSeat('interrogate');
-      await fetchTakes();
-      clearSpeaker();
+        const { done, data } = await runOneSeat(apiPhase);
+        await fetchTakes();
+        clearSpeaker();
 
-      if (done) break;
-      if (i < selectedSeats.length - 1) await delay(2000);
-    }
+        if (done || data.phase?.endsWith('_done')) break;
+        if (data.session?.status === 'complete') { setPhase('complete'); return true; }
+        if (i < selectedSeats.length - 1) await delay(2000);
+      }
+      return false;
+    };
 
+    // Phase 1: Interrogate
+    if (await drivePhase('interrogating', 'interrogate', (n) => `${n} is speaking...`)) return;
     if (abortRef.current) return;
     await delay(1500);
 
-    // Phase 2: Advise — one seat at a time
-    setPhase('advising');
-    let adviseAttempts = 0;
-    const maxAdviseAttempts = selectedSeats.length + 4;
-    let adviseDone = false;
-
-    while (!adviseDone && adviseAttempts < maxAdviseAttempts) {
-      if (abortRef.current) return;
-      adviseAttempts++;
-
-      const seatIdx = Math.min(adviseAttempts - 1, selectedSeats.length - 1);
-      const seatId = selectedSeats[seatIdx];
-      const member = boardMembers.find((m) => m.id === seatId);
-      revealSeat(seatId, `${member?.name || 'Advisor'} is advising...`);
-
-      const { done, data } = await runOneSeat('advise');
-      await fetchTakes();
-      clearSpeaker();
-
-      if (done || data.phase === 'advise_done') {
-        adviseDone = true;
-        break;
-      }
-      if (data.session?.status === 'complete') {
-        adviseDone = true;
-        setPhase('complete');
-        return;
-      }
-      await delay(2000);
-    }
-
+    // Phase 2: Cross-Examination
+    if (await drivePhase('cross_examining', 'cross_examine', (n) => `${n} is cross-examining...`)) return;
     if (abortRef.current) return;
     await delay(1500);
 
-    // Phase 3: Synthesize
+    // Phase 3: Advise
+    if (await drivePhase('advising', 'advise', (n) => `${n} is advising...`)) return;
+    if (abortRef.current) return;
+    await delay(1500);
+
+    // Phase 4: Vote
+    if (await drivePhase('voting', 'vote', (n) => `${n} is voting...`)) return;
+    if (abortRef.current) return;
+    await delay(1500);
+
+    // Phase 5: Synthesize
     setPhase('synthesizing');
     revealSeat('chair', 'Chair is synthesizing...');
 
@@ -210,7 +200,9 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
     switch (p) {
       case 'setup': return 'Session Setup';
       case 'interrogating': return 'Interrogation Phase';
+      case 'cross_examining': return 'Cross-Examination';
       case 'advising': return 'Advisory Phase';
+      case 'voting': return 'The Vote';
       case 'synthesizing': return 'Chair Synthesis';
       case 'complete': return 'Session Complete';
     }

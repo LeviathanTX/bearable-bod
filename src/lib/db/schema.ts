@@ -88,6 +88,7 @@ export const companies = pgTable('companies', {
   targetBuyer: text('target_buyer'),
   stage: text('stage').notNull().default('intake'),
   readinessNote: text('readiness_note'),
+  orgContext: jsonb('org_context'),
   archived: boolean('archived').default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
@@ -105,6 +106,7 @@ export const boardMembers = pgTable('board_members', {
   personaPrompt: text('persona_prompt'),
   seatContext: text('seat_context'),
   interrogationStyle: text('interrogation_style'),
+  nonNegotiables: text('non_negotiables'),
   avatarEmoji: text('avatar_emoji'),
   avatarUrl: text('avatar_url'),
   model: text('model').default('us.anthropic.claude-sonnet-4-6'),
@@ -138,6 +140,7 @@ export const reviewSessions = pgTable('review_sessions', {
   runBy: uuid('run_by').notNull().references(() => users.id),
   mode: text('mode').notNull().default('full_review'),
   focusPrompt: text('focus_prompt'),
+  founderStatement: text('founder_statement'),
   phase: text('phase').notNull().default('interrogate'),
   status: text('status').notNull().default('active'),
   seatIds: jsonb('seat_ids').default([]),
@@ -160,6 +163,18 @@ export const sessionTakes = pgTable('session_takes', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (t) => [
   index('session_takes_session_idx').on(t.sessionId),
+]);
+
+export const sessionVotes = pgTable('session_votes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  sessionId: uuid('session_id').notNull().references(() => reviewSessions.id),
+  boardMemberId: uuid('board_member_id').notNull().references(() => boardMembers.id),
+  vote: text('vote').notNull(),
+  rationale: text('rationale'),
+  conditions: jsonb('conditions').default([]),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index('session_votes_session_idx').on(t.sessionId),
 ]);
 
 export const objections = pgTable('objections', {

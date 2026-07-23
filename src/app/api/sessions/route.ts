@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
     const session = await resolveSession();
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const { companyId, seatIds, mode, focusPrompt } = await req.json();
+    const { companyId, seatIds, mode, focusPrompt, founderStatement } = await req.json();
     if (!companyId || !seatIds || !Array.isArray(seatIds) || seatIds.length === 0) {
       return NextResponse.json({ error: 'companyId and seatIds required' }, { status: 400 });
     }
@@ -42,6 +42,7 @@ export async function POST(req: NextRequest) {
         runBy: session.id,
         mode: mode || 'full_review',
         focusPrompt: focusPrompt || null,
+        founderStatement: founderStatement || null,
         seatIds,
       }).returning()
     );

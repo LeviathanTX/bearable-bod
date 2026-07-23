@@ -11,6 +11,7 @@ export interface ReviewContext {
     targetBuyer: string | null;
     stage: string;
     readinessNote: string | null;
+    orgContext: any | null;
   };
   openObjections: string;
   priorSyntheses: string;
@@ -89,6 +90,7 @@ export async function buildReviewContext(
       targetBuyer: company.targetBuyer,
       stage: company.stage,
       readinessNote: company.readinessNote,
+      orgContext: (company as any).orgContext || null,
     },
     openObjections: objectionLines || 'None on record.',
     priorSyntheses: syntheses || 'No prior sessions.',

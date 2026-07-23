@@ -1,5 +1,5 @@
 import { db, withUserContext } from '@/lib/db/client';
-import { boardMembers, reviewSessions, sessionTakes, objections, companies } from '@/lib/db/schema';
+import { boardMembers, reviewSessions, sessionTakes, sessionVotes, objections, companies } from '@/lib/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { converse, converseJson } from '@/lib/ai/converse';
 import { buildReviewContext, ReviewContext } from './build-review-context';
@@ -21,6 +21,7 @@ interface BoardMemberRow {
   personaPrompt: string | null;
   seatContext: string | null;
   interrogationStyle: string | null;
+  nonNegotiables: string | null;
   model: string | null;
 }
 
@@ -67,7 +68,7 @@ export async function runSingleSeatInterrogation(
   const capOk = await checkAiCallCap(orgId, dailyCap);
   if (!capOk) throw new Error('Daily AI call cap reached');
 
-  await runInterrogation(orgId, sessionId, seat, context, query);
+  await runInterrogation(orgId, sessionId, seat, context, query, session.founderStatement || undefined);
 }
 
 export async function runSingleSeatAdvise(
@@ -129,6 +130,114 @@ export async function runSingleSeatAdvise(
   );
 
   await runAdvise(orgId, sessionId, seat, context, objectionList, myTake[0]?.content || '');
+}
+
+export async function runSingleSeatCrossExamine(
+  orgId: string,
+  sessionId: string,
+  seatId: string,
+  dailyCap: number,
+): Promise<void> {
+  const { session, seats, companyId } = await loadSessionAndSeats(orgId, sessionId);
+  const seat = seats.find((s) => s.id === seatId);
+  if (!seat) throw new Error(`Seat ${seatId} not found`);
+
+  const capOk = await checkAiCallCap(orgId, dailyCap);
+  if (!capOk) throw new Error('Daily AI call cap reached');
+
+  // Get all interrogation takes (others' takes for cross-examination)
+  const allInterrogationTakes = await withUserContext(orgId, 'all', () =>
+    db.select().from(sessionTakes)
+      .where(and(eq(sessionTakes.sessionId, sessionId), eq(sessionTakes.phase, 'interrogate')))
+  );
+
+  const otherTakes = allInterrogationTakes
+    .filter((t) => t.boardMemberId !== seatId)
+    .map((t) => {
+      const otherSeat = seats.find((s) => s.id === t.boardMemberId);
+      return `[${otherSeat?.name} - ${otherSeat?.committeeRole}]:\n${t.content}`;
+    })
+    .join('\n\n');
+
+  const myTake = allInterrogationTakes.find((t) => t.boardMemberId === seatId);
+
+  const nonNeg = seat.nonNegotiables ? `\n\nYour non-negotiables (defend these):\n${seat.nonNegotiables}` : '';
+
+  const systemPrompt = buildSeatSystemPrompt(seat, 'interrogate') +
+    `\n\nYou are now in CROSS-EXAMINATION. Review your colleagues' interrogation takes and respond: Where do you disagree with their assessments? Where do they change your view? State any concession explicitly and defend your non-negotiables.${nonNeg}`;
+
+  const result = await converse({
+    model: seat.model || DEFAULT_SEAT_MODEL,
+    systemPrompt,
+    messages: [{
+      role: 'user',
+      content: `Your own interrogation:\n${myTake?.content || 'N/A'}\n\nYour colleagues' interrogations:\n${otherTakes}`,
+    }],
+    maxTokens: 800,
+    temperature: 0.7,
+  });
+
+  await withUserContext(orgId, 'all', async () => {
+    await db.insert(sessionTakes).values({
+      sessionId,
+      boardMemberId: seat.id,
+      phase: 'cross_examine',
+      content: result.content,
+      tokensUsed: result.tokensUsed,
+    });
+  });
+}
+
+export async function runSingleSeatVote(
+  orgId: string,
+  sessionId: string,
+  seatId: string,
+  dailyCap: number,
+): Promise<void> {
+  const { session, seats, companyId } = await loadSessionAndSeats(orgId, sessionId);
+  const seat = seats.find((s) => s.id === seatId);
+  if (!seat) throw new Error(`Seat ${seatId} not found`);
+
+  const capOk = await checkAiCallCap(orgId, dailyCap);
+  if (!capOk) throw new Error('Daily AI call cap reached');
+
+  // Load all takes for context
+  const allTakes = await withUserContext(orgId, 'all', () =>
+    db.select().from(sessionTakes).where(eq(sessionTakes.sessionId, sessionId))
+  );
+
+  const myTakes = allTakes.filter((t) => t.boardMemberId === seatId);
+  const myContext = myTakes.map((t) => `[${t.phase}]: ${t.content}`).join('\n\n');
+
+  const allObjections = await withUserContext(orgId, companyId, () =>
+    db.select().from(objections).where(eq(objections.raisedInSession, sessionId))
+  );
+
+  const objSummary = allObjections
+    .map((o) => `[${o.severity}] ${o.title}: ${(o.detail || '').slice(0, 100)}`)
+    .join('\n');
+
+  const nonNeg = seat.nonNegotiables ? `\n\nYour non-negotiables:\n${seat.nonNegotiables}` : '';
+
+  interface VoteOutput { vote: string; rationale: string; conditions: string[] }
+
+  const { data: voteData } = await converseJson<VoteOutput>({
+    model: seat.model || DEFAULT_SEAT_MODEL,
+    maxTokens: 600,
+    systemPrompt: buildSeatSystemPrompt(seat, 'advise') +
+      `\n\nYou are now VOTING on whether this vendor should proceed. Return JSON: {"vote": "YES"|"YES_WITH_CONDITIONS"|"NO", "rationale": "one paragraph", "conditions": ["list of conditions if applicable"]}. Base your vote on all evidence including cross-examination. Mixed votes and NO are legitimate outcomes - never bias toward approval.${nonNeg}`,
+    userMessage: `Your assessment across phases:\n${myContext}\n\nAll objections:\n${objSummary}`,
+  });
+
+  await withUserContext(orgId, 'all', async () => {
+    await db.insert(sessionVotes).values({
+      sessionId,
+      boardMemberId: seat.id,
+      vote: voteData.vote || 'NO',
+      rationale: voteData.rationale || '',
+      conditions: voteData.conditions || [],
+    });
+  });
 }
 
 export async function runInterrogationPhase(
@@ -212,6 +321,10 @@ export async function runSynthesisPhase(
     .filter((t) => t.phase === 'advise')
     .map((t) => ({ boardMemberId: t.boardMemberId, content: t.content }));
 
+  const crossExamResults = allTakes
+    .filter((t) => t.phase === 'cross_examine')
+    .map((t) => ({ boardMemberId: t.boardMemberId, content: t.content }));
+
   // Load objections for this session
   const allObjections = await withUserContext(orgId, companyId, () =>
     db.select().from(objections)
@@ -226,7 +339,12 @@ export async function runSynthesisPhase(
     boardMemberId: o.raisedBy || '',
   }));
 
-  await runChairSynthesis(orgId, sessionId, companyId, context, interrogationResults, adviseResults, objectionSummary);
+  // Load votes
+  const votes = await withUserContext(orgId, 'all', () =>
+    db.select().from(sessionVotes).where(eq(sessionVotes.sessionId, sessionId))
+  );
+
+  await runChairSynthesis(orgId, sessionId, companyId, context, interrogationResults, adviseResults, crossExamResults, objectionSummary, votes, seats);
 
   await storeMemory(
     orgId,
@@ -255,9 +373,10 @@ async function runInterrogation(
   seat: BoardMemberRow,
   context: ReviewContext,
   query: string,
+  founderStatement?: string,
 ): Promise<{ boardMemberId: string; content: string }> {
   const systemPrompt = buildSeatSystemPrompt(seat, 'interrogate');
-  const userMessage = buildContextMessage(context, query);
+  const userMessage = buildContextMessage(context, query, founderStatement);
 
   const result = await converse({
     model: seat.model || DEFAULT_SEAT_MODEL,
@@ -445,10 +564,22 @@ async function runChairSynthesis(
   context: ReviewContext,
   interrogations: { boardMemberId: string; content: string }[],
   adviseResults: { boardMemberId: string; content: string }[],
+  crossExamResults: { boardMemberId: string; content: string }[],
   allObjections: ExtractedObjection[],
+  votes: { boardMemberId: string; vote: string; rationale: string | null; conditions: any }[],
+  seats: BoardMemberRow[],
 ): Promise<string> {
   const interrogationText = interrogations.map((r) => r.content).join('\n---\n');
   const adviseText = adviseResults.map((r) => r.content).join('\n---\n');
+  const crossExamText = crossExamResults.map((r) => {
+    const seat = seats.find((s) => s.id === r.boardMemberId);
+    return `[${seat?.name}]: ${r.content}`;
+  }).join('\n---\n');
+
+  const voteText = votes.map((v) => {
+    const seat = seats.find((s) => s.id === v.boardMemberId);
+    return `${seat?.name}: ${v.vote} - ${v.rationale || ''}`;
+  }).join('\n');
 
   const { data: synthesis } = await converseJson<SynthesisOutput>({
     model: SYNTHESIS_MODEL,
@@ -461,8 +592,8 @@ async function runChairSynthesis(
   "readinessNote": "one paragraph assessing current state",
   "objectionUpdates": [{"title": "objection title", "newState": "addressed|resolved|still_weak", "reason": "why"}]
 }
-Rank punchList by severity (deal_killers first). Surface disagreements explicitly.`,
-    userMessage: `Company: ${context.company.name}\nStage: ${context.company.stage}\n\nInterrogation phase:\n${interrogationText}\n\nAdvise phase:\n${adviseText}\n\nCurrent objections:\n${context.openObjections}`,
+Rank punchList by severity (deal_killers first). Surface disagreements explicitly. Incorporate vote outcomes and cross-examination concessions.`,
+    userMessage: `Company: ${context.company.name}\nStage: ${context.company.stage}\n\nInterrogation:\n${interrogationText}\n\nCross-Examination:\n${crossExamText || 'N/A'}\n\nAdvise:\n${adviseText}\n\nVotes:\n${voteText || 'N/A'}\n\nObjections:\n${context.openObjections}`,
   });
 
   // Build human-readable synthesis text from structured data
@@ -523,12 +654,20 @@ function buildSeatSystemPrompt(seat: BoardMemberRow, phase: 'interrogate' | 'adv
   return `${persona}${context}${style}\n\nYou just interrogated this pitch. Now advise the founder: for each of your objections, state the specific fix in 1-2 sentences. Be direct, no preamble.`;
 }
 
-function buildContextMessage(context: ReviewContext, query: string): string {
+function buildContextMessage(context: ReviewContext, query: string, founderStatement?: string): string {
+  const orgCtx = context.company.orgContext
+    ? `\nBuying organization profile: ${JSON.stringify(context.company.orgContext)}`
+    : '';
+
+  const founderPres = founderStatement
+    ? `\n\nFounder's presentation to the board:\n${founderStatement}`
+    : '';
+
   return `Company: ${context.company.name}
 One-liner: ${context.company.oneLiner || 'Not provided'}
 Target buyer: ${context.company.targetBuyer || 'Not specified'}
 Stage: ${context.company.stage}
-Previous readiness: ${context.company.readinessNote || 'First review'}
+Previous readiness: ${context.company.readinessNote || 'First review'}${orgCtx}
 
 Open objections from prior sessions:
 ${context.openObjections}
@@ -543,7 +682,7 @@ Relevant document excerpts:
 ${context.relevantChunks}
 
 Previous punch list:
-${context.previousPunchList}
+${context.previousPunchList}${founderPres}
 
 ${query !== 'Full review of this company pitch and readiness' ? `Focus: ${query}` : 'Conduct a full review.'}`;
 }

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { resolveSession } from '@/lib/auth/session';
 import { db, withUserContext } from '@/lib/db/client';
-import { reviewSessions, sessionTakes } from '@/lib/db/schema';
+import { reviewSessions, sessionTakes, sessionVotes } from '@/lib/db/schema';
 import { eq, and } from 'drizzle-orm';
 
 const STALL_THRESHOLD_MS = 30 * 60 * 1000;
@@ -36,9 +36,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     }
   }
 
-  const takes = await withUserContext(session.orgId, companyScope, () =>
-    db.select().from(sessionTakes).where(eq(sessionTakes.sessionId, id))
-  );
+  const [takes, votes] = await Promise.all([
+    withUserContext(session.orgId, companyScope, () =>
+      db.select().from(sessionTakes).where(eq(sessionTakes.sessionId, id))
+    ),
+    withUserContext(session.orgId, companyScope, () =>
+      db.select().from(sessionVotes).where(eq(sessionVotes.sessionId, id))
+    ),
+  ]);
 
-  return NextResponse.json({ session: reviewSession, takes });
+  return NextResponse.json({ session: reviewSession, takes, votes });
 }
