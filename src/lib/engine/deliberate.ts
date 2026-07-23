@@ -583,7 +583,7 @@ async function runChairSynthesis(
 
   const { data: synthesis } = await converseJson<SynthesisOutput>({
     model: SYNTHESIS_MODEL,
-    maxTokens: 2000,
+    maxTokens: 4000,
     systemPrompt: `You are the Chair synthesizing a board review session. Return a JSON object with this exact structure:
 {
   "agreements": ["string - areas where board members agree"],
@@ -604,7 +604,7 @@ Rank punchList by severity (deal_killers first). Surface disagreements explicitl
       phase: 'synthesized',
       status: 'complete',
       synthesis: synthText,
-      punchList: synthesis.punchList,
+      punchList: synthesis.punchList || [],
       updatedAt: new Date(),
     }).where(eq(reviewSessions.id, sessionId));
 
@@ -623,18 +623,18 @@ function formatSynthesis(s: SynthesisOutput, companyName: string): string {
   const lines: string[] = [`# ${companyName} - Board Synthesis\n`];
 
   lines.push('## Agreements');
-  s.agreements.forEach((a) => lines.push(`- ${a}`));
+  (s.agreements || []).forEach((a) => lines.push(`- ${a}`));
 
   lines.push('\n## Disagreements');
-  s.disagreements.forEach((d) => lines.push(`- ${d}`));
+  (s.disagreements || []).forEach((d) => lines.push(`- ${d}`));
 
   lines.push('\n## Punch List');
-  s.punchList.forEach((p, i) => lines.push(`${i + 1}. [${p.severity}] ${p.title} (${p.lens}) - ${p.fix}${p.deadline ? ` [${p.deadline}]` : ''}`));
+  (s.punchList || []).forEach((p, i) => lines.push(`${i + 1}. [${p.severity}] ${p.title} (${p.lens}) - ${p.fix}${p.deadline ? ` [${p.deadline}]` : ''}`));
 
   lines.push('\n## Readiness Note');
-  lines.push(s.readinessNote);
+  lines.push(s.readinessNote || 'No readiness assessment available.');
 
-  if (s.objectionUpdates.length > 0) {
+  if ((s.objectionUpdates || []).length > 0) {
     lines.push('\n## Objection Status Updates');
     s.objectionUpdates.forEach((u) => lines.push(`- "${u.title}" -> ${u.newState} (${u.reason})`));
   }
