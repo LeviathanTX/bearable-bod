@@ -24,7 +24,6 @@ export async function POST() {
 
   let success = 0;
   let failed = 0;
-  const errors: string[] = [];
 
   await withUserContext(session.orgId, 'all', async () => {
     for (const chunk of chunks) {
@@ -38,9 +37,7 @@ export async function POST() {
         `);
         success++;
       } catch (err) {
-        const msg = (err as Error).message;
-        console.error(`[backfill] Failed chunk ${chunk.id}: ${msg}`);
-        if (errors.length < 3) errors.push(msg);
+        console.error(`[backfill] Failed chunk ${chunk.id}: ${(err as Error).message}`);
         failed++;
       }
     }
@@ -65,7 +62,6 @@ export async function POST() {
     processed: chunks.length,
     success,
     failed,
-    errors: errors.length > 0 ? errors : undefined,
     remaining: chunks.length === 50 ? 'more chunks pending, call again' : 0,
   });
 }
