@@ -38,6 +38,8 @@ interface Props {
   onClose: () => void;
 }
 
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: Props) {
   const [phase, setPhase] = useState<MeetingPhase>('setup');
   const [selectedSeats, setSelectedSeats] = useState<string[]>([]);
@@ -49,8 +51,9 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
   const [punchList, setPunchList] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [speakerLabel, setSpeakerLabel] = useState<string | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef(false);
 
   const toggleSeat = (id: string) => {
     setSelectedSeats((prev) =>
@@ -62,6 +65,7 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
     if (selectedSeats.length === 0) return;
     setError(null);
     setPhase('interrogating');
+    abortRef.current = false;
 
     try {
       const res = await fetch('/api/sessions', {
@@ -82,89 +86,125 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
 
       const { session } = await res.json();
       setSessionId(session.id);
-      startPolling(session.id);
-      driveDeliberation(session.id);
+      await driveSequential(session.id);
     } catch (err: any) {
-      setError(err.message);
-      setPhase('setup');
+      if (!abortRef.current) {
+        setError(err.message);
+        setPhase('setup');
+      }
     }
   };
 
-  const driveDeliberation = async (sid: string) => {
-    try {
-      const runPhase = async (phase: string) => {
-        const res = await fetch(`/api/sessions/${sid}/run`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phase }),
-        });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({ error: 'Unknown error' }));
-          throw new Error(data.error || `Phase ${phase} failed`);
-        }
-        return res.json();
-      };
-
-      await runPhase('interrogate');
-      setPhase('advising');
-      await runPhase('advise');
-      setPhase('synthesizing');
-      await runPhase('synthesize');
-    } catch (err: any) {
-      setError(err.message);
-    }
-  };
-
-  const startPolling = (sid: string) => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(() => pollSession(sid), 2000);
-  };
-
-  const pollSession = useCallback(async (sid: string) => {
-    try {
-      const res = await fetch(`/api/sessions/${sid}`);
-      if (!res.ok) return;
+  const driveSequential = async (sid: string) => {
+    const runOneSeat = async (phase: string): Promise<{ done: boolean; data: any }> => {
+      const res = await fetch(`/api/sessions/${sid}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phase }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Request failed' }));
+        throw new Error(err.error || `Phase ${phase} failed`);
+      }
       const data = await res.json();
-      const session: SessionData = data.session;
-      const newTakes: Take[] = data.takes || [];
-
-      setTakes(newTakes);
-
-      if (session.phase === 'advise' && phase === 'interrogating') {
-        setPhase('advising');
-      }
-      if (session.phase === 'synthesized' || session.status === 'complete') {
-        setPhase('complete');
-        setSynthesis(session.synthesis);
-        setPunchList(session.punchList || []);
-        if (pollRef.current) clearInterval(pollRef.current);
-      }
-    } catch {}
-  }, [phase]);
-
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+      if (data.session?.status === 'complete') return { done: true, data };
+      const phaseResult = data.phase || '';
+      const isDone = phaseResult.endsWith('_done') || phaseResult === 'complete';
+      return { done: isDone, data };
     };
-  }, []);
+
+    const fetchTakes = async () => {
+      try {
+        const res = await fetch(`/api/sessions/${sid}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        setTakes(data.takes || []);
+        if (data.session?.synthesis) setSynthesis(data.session.synthesis);
+        if (data.session?.punchList?.length) setPunchList(data.session.punchList);
+      } catch {}
+    };
+
+    const revealSeat = (seatId: string, label: string) => {
+      setActiveSpeaker(seatId);
+      setSpeakerLabel(label);
+    };
+
+    const clearSpeaker = () => {
+      setActiveSpeaker(null);
+      setSpeakerLabel(null);
+    };
+
+    // Phase 1: Interrogate — one seat at a time
+    setPhase('interrogating');
+    for (let i = 0; i < selectedSeats.length; i++) {
+      if (abortRef.current) return;
+      const seatId = selectedSeats[i];
+      const member = boardMembers.find((m) => m.id === seatId);
+      revealSeat(seatId, `${member?.name || 'Advisor'} is speaking...`);
+
+      const { done } = await runOneSeat('interrogate');
+      await fetchTakes();
+      clearSpeaker();
+
+      if (done) break;
+      if (i < selectedSeats.length - 1) await delay(2000);
+    }
+
+    if (abortRef.current) return;
+    await delay(1500);
+
+    // Phase 2: Advise — one seat at a time
+    setPhase('advising');
+    let adviseAttempts = 0;
+    const maxAdviseAttempts = selectedSeats.length + 4;
+    let adviseDone = false;
+
+    while (!adviseDone && adviseAttempts < maxAdviseAttempts) {
+      if (abortRef.current) return;
+      adviseAttempts++;
+
+      const seatIdx = Math.min(adviseAttempts - 1, selectedSeats.length - 1);
+      const seatId = selectedSeats[seatIdx];
+      const member = boardMembers.find((m) => m.id === seatId);
+      revealSeat(seatId, `${member?.name || 'Advisor'} is advising...`);
+
+      const { done, data } = await runOneSeat('advise');
+      await fetchTakes();
+      clearSpeaker();
+
+      if (done || data.phase === 'advise_done') {
+        adviseDone = true;
+        break;
+      }
+      if (data.session?.status === 'complete') {
+        adviseDone = true;
+        setPhase('complete');
+        return;
+      }
+      await delay(2000);
+    }
+
+    if (abortRef.current) return;
+    await delay(1500);
+
+    // Phase 3: Synthesize
+    setPhase('synthesizing');
+    revealSeat('chair', 'Chair is synthesizing...');
+
+    const { data: synthData } = await runOneSeat('synthesize');
+    await fetchTakes();
+    clearSpeaker();
+
+    if (synthData.session?.synthesis) setSynthesis(synthData.session.synthesis);
+    if (synthData.session?.punchList?.length) setPunchList(synthData.session.punchList);
+    setPhase('complete');
+  };
 
   useEffect(() => {
     if (transcriptRef.current) {
       transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
     }
   }, [takes]);
-
-  useEffect(() => {
-    if (takes.length > 0 && phase !== 'complete') {
-      const latest = takes[takes.length - 1];
-      setActiveSpeaker(latest.boardMemberId);
-      const timer = setTimeout(() => setActiveSpeaker(null), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [takes.length, phase]);
-
-  const getSeatTakes = (seatId: string, phaseFilter: string) =>
-    takes.filter((t) => t.boardMemberId === seatId && t.phase === phaseFilter);
 
   const phaseLabel = (p: MeetingPhase) => {
     switch (p) {
@@ -187,7 +227,7 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
           </span>
         </div>
         <button
-          onClick={onClose}
+          onClick={() => { abortRef.current = true; onClose(); }}
           className="text-gray-400 hover:text-white transition-colors text-sm"
         >
           Leave Meeting
@@ -234,10 +274,28 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
                 })}
               </div>
 
+              {/* Speaking label */}
+              {speakerLabel && phase !== 'complete' && (
+                <div className="px-6 pb-2">
+                  <p className="text-emerald-400 text-sm font-medium animate-pulse">
+                    {speakerLabel}
+                  </p>
+                </div>
+              )}
+
+              {/* Shimmer bar when waiting between seats */}
+              {phase !== 'complete' && !activeSpeaker && (
+                <div className="px-6 pb-2">
+                  <div className="h-1 rounded-full bg-gray-800 overflow-hidden">
+                    <div className="h-full w-1/3 bg-gradient-to-r from-transparent via-emerald-500/40 to-transparent animate-shimmer" />
+                  </div>
+                </div>
+              )}
+
               {/* Synthesis panel */}
               {phase === 'complete' && synthesis && (
-                <div className="px-4 pb-4">
-                  <div className="bg-gray-800 border border-gray-700 rounded-lg p-4 max-h-64 overflow-y-auto">
+                <div className="px-4 pb-4 flex-1 overflow-y-auto">
+                  <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
                     <h3 className="text-emerald-400 font-medium text-sm mb-2">Chair Synthesis</h3>
                     <div className="text-gray-300 text-sm whitespace-pre-wrap">{synthesis}</div>
                     {punchList.length > 0 && (
@@ -264,28 +322,35 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
               <h3 className="text-gray-300 text-sm font-medium">Transcript</h3>
             </div>
             <div ref={transcriptRef} className="flex-1 overflow-y-auto px-4 py-2 space-y-3">
-              {takes.map((take) => {
+              {takes.map((take, idx) => {
                 const member = boardMembers.find((m) => m.id === take.boardMemberId);
                 return (
-                  <div key={take.id} className="text-sm">
+                  <div
+                    key={take.id || idx}
+                    className="text-sm animate-fadeIn"
+                  >
                     <div className="flex items-center gap-2 mb-0.5">
-                      <span className="text-lg">{member?.avatarEmoji || '👤'}</span>
+                      <span className="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-xs">
+                        {member?.name?.charAt(0) || '?'}
+                      </span>
                       <span className="text-gray-400 font-medium text-xs">{member?.name}</span>
-                      <span className="text-gray-600 text-xs">
-                        {take.phase === 'interrogate' ? '🔍' : '💡'}
+                      <span className="text-gray-600 text-xs ml-auto">
+                        {take.phase === 'interrogate' ? 'interrogation' : 'advisory'}
                       </span>
                     </div>
-                    <p className="text-gray-300 text-xs leading-relaxed pl-7">
-                      {take.content.slice(0, 400)}
-                      {take.content.length > 400 && '...'}
+                    <p className="text-gray-300 text-xs leading-relaxed pl-8">
+                      {take.content.slice(0, 500)}
+                      {take.content.length > 500 && '...'}
                     </p>
                   </div>
                 );
               })}
               {takes.length === 0 && phase !== 'complete' && (
-                <div className="flex items-center gap-2 text-gray-500 text-xs">
-                  <span className="animate-pulse">●</span>
-                  Waiting for board members...
+                <div className="flex items-center gap-2 text-gray-500 text-xs py-4">
+                  <div className="h-1 w-12 rounded-full bg-gray-800 overflow-hidden">
+                    <div className="h-full w-1/3 bg-gradient-to-r from-transparent via-gray-600 to-transparent animate-shimmer" />
+                  </div>
+                  <span>Waiting for board members...</span>
                 </div>
               )}
             </div>
@@ -346,7 +411,9 @@ function SetupPanel({
                 }`}
               >
                 <div className="flex items-center gap-2">
-                  <span className="text-xl">{member.avatarEmoji || '👤'}</span>
+                  <span className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-sm font-medium text-gray-300">
+                    {member.name.charAt(0)}
+                  </span>
                   <div className="min-w-0">
                     <p className={`text-sm font-medium truncate ${selected ? 'text-emerald-300' : 'text-gray-200'}`}>
                       {member.name}
@@ -361,6 +428,10 @@ function SetupPanel({
             );
           })}
         </div>
+
+        {selectedSeats.length === 0 && (
+          <p className="text-amber-400/80 text-sm">Select at least one advisor to begin</p>
+        )}
 
         <div>
           <h3 className="text-white text-sm font-medium mb-2">Session Mode</h3>
@@ -404,7 +475,9 @@ function SetupPanel({
           disabled={selectedSeats.length === 0}
           className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium rounded-lg transition-colors"
         >
-          Start Board Meeting ({selectedSeats.length} seat{selectedSeats.length !== 1 ? 's' : ''})
+          {selectedSeats.length === 0
+            ? 'Select advisors to begin'
+            : `Start Board Meeting (${selectedSeats.length} seat${selectedSeats.length !== 1 ? 's' : ''})`}
         </button>
       </div>
     </div>
@@ -424,31 +497,53 @@ function SeatTile({
 }) {
   return (
     <div
-      className={`bg-gray-800 rounded-lg p-3 border transition-all ${
-        isActive ? 'border-emerald-500 shadow-lg shadow-emerald-500/10' : 'border-gray-700'
+      className={`relative bg-gray-800 rounded-lg p-4 border-2 transition-all duration-300 ${
+        isActive
+          ? 'border-emerald-500 shadow-lg shadow-emerald-500/20 scale-[1.02]'
+          : latestTake
+          ? 'border-gray-600'
+          : 'border-gray-700'
       }`}
     >
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-2xl">{member.avatarEmoji || '👤'}</span>
+      {/* Emerald ring pulse on active */}
+      {isActive && (
+        <div className="absolute inset-0 rounded-lg border-2 border-emerald-400 animate-ping opacity-30 pointer-events-none" />
+      )}
+
+      <div className="flex items-center gap-3 mb-2">
+        <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold transition-colors ${
+          isActive ? 'bg-emerald-600 text-white' : 'bg-gray-700 text-gray-300'
+        }`}>
+          {member.name.split(' ').map((w) => w[0]).join('').slice(0, 2)}
+        </div>
         <div className="min-w-0 flex-1">
           <p className="text-gray-200 text-sm font-medium truncate">{member.name}</p>
           <p className="text-gray-500 text-xs truncate">{member.committeeRole || member.title}</p>
         </div>
         {isActive && (
-          <span className="flex items-center gap-1">
-            <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />
-            <span className="w-1 h-1 bg-emerald-400 rounded-full animate-pulse delay-75" />
-            <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse delay-150" />
-          </span>
+          <span className="text-emerald-400 text-xs font-medium">Speaking</span>
+        )}
+        {!isActive && latestTake && (
+          <span className="text-gray-500 text-xs">Done</span>
         )}
       </div>
-      {latestTake && (
-        <p className="text-gray-400 text-xs leading-relaxed line-clamp-3">
-          {latestTake.content.slice(0, 150)}...
+
+      {latestTake && !isActive && (
+        <p className="text-gray-400 text-xs leading-relaxed line-clamp-2">
+          {latestTake.content.slice(0, 120)}...
         </p>
       )}
-      {!latestTake && phase !== 'complete' && (
-        <p className="text-gray-600 text-xs italic">Preparing...</p>
+
+      {isActive && (
+        <div className="flex gap-1 mt-1">
+          <div className="h-1 flex-1 rounded-full bg-gray-700 overflow-hidden">
+            <div className="h-full w-full bg-gradient-to-r from-emerald-600/0 via-emerald-500 to-emerald-600/0 animate-shimmer" />
+          </div>
+        </div>
+      )}
+
+      {!latestTake && !isActive && phase !== 'complete' && (
+        <p className="text-gray-600 text-xs mt-1">Waiting...</p>
       )}
     </div>
   );
