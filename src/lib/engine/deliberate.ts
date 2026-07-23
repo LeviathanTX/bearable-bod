@@ -46,6 +46,86 @@ async function loadSessionAndSeats(orgId: string, sessionId: string): Promise<{ 
   return { session, seats, companyId: session.companyId };
 }
 
+export async function runSingleSeatInterrogation(
+  orgId: string,
+  sessionId: string,
+  seatId: string,
+  dailyCap: number,
+): Promise<void> {
+  const { session, seats, companyId } = await loadSessionAndSeats(orgId, sessionId);
+  const seat = seats.find((s) => s.id === seatId);
+  if (!seat) throw new Error(`Seat ${seatId} not found`);
+
+  const query = session.focusPrompt || 'Full review of this company pitch and readiness';
+  const context = await buildReviewContext(orgId, companyId, query);
+
+  const capOk = await checkAiCallCap(orgId, dailyCap);
+  if (!capOk) throw new Error('Daily AI call cap reached');
+
+  await runInterrogation(orgId, sessionId, seat, context, query);
+}
+
+export async function runSingleSeatAdvise(
+  orgId: string,
+  sessionId: string,
+  seatId: string,
+  dailyCap: number,
+): Promise<void> {
+  const { session, seats, companyId } = await loadSessionAndSeats(orgId, sessionId);
+  const seat = seats.find((s) => s.id === seatId);
+  if (!seat) throw new Error(`Seat ${seatId} not found`);
+
+  const query = session.focusPrompt || 'Full review of this company pitch and readiness';
+  const context = await buildReviewContext(orgId, companyId, query);
+
+  const capOk = await checkAiCallCap(orgId, dailyCap);
+  if (!capOk) throw new Error('Daily AI call cap reached');
+
+  // On first advise seat, extract objections from all interrogation takes
+  const existingAdviseTakes = await withUserContext(orgId, 'all', () =>
+    db.select({ boardMemberId: sessionTakes.boardMemberId })
+      .from(sessionTakes)
+      .where(and(eq(sessionTakes.sessionId, sessionId), eq(sessionTakes.phase, 'advise')))
+  );
+
+  if (existingAdviseTakes.length === 0) {
+    const interrogationTakes = await withUserContext(orgId, 'all', () =>
+      db.select().from(sessionTakes)
+        .where(and(eq(sessionTakes.sessionId, sessionId), eq(sessionTakes.phase, 'interrogate')))
+    );
+    const interrogationResults = interrogationTakes.map((t) => ({
+      boardMemberId: t.boardMemberId,
+      content: t.content,
+    }));
+    await extractObjections(orgId, companyId, sessionId, interrogationResults, seats);
+  }
+
+  // Load all objections for the advise context
+  const allObjections = await withUserContext(orgId, companyId, () =>
+    db.select().from(objections).where(eq(objections.raisedInSession, sessionId))
+  );
+  const objectionList: ExtractedObjection[] = allObjections.map((o) => ({
+    title: o.title,
+    detail: o.detail || '',
+    severity: o.severity as 'deal_killer' | 'major' | 'minor',
+    lens: o.lens || '',
+    boardMemberId: o.raisedBy || '',
+  }));
+
+  // Get this seat's interrogation take
+  const myTake = await withUserContext(orgId, 'all', () =>
+    db.select().from(sessionTakes)
+      .where(and(
+        eq(sessionTakes.sessionId, sessionId),
+        eq(sessionTakes.phase, 'interrogate'),
+        eq(sessionTakes.boardMemberId, seatId),
+      ))
+      .limit(1)
+  );
+
+  await runAdvise(orgId, sessionId, seat, context, objectionList, myTake[0]?.content || '');
+}
+
 export async function runInterrogationPhase(
   orgId: string,
   sessionId: string,

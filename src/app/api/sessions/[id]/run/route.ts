@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { resolveSession } from '@/lib/auth/session';
 import { db, withUserContext } from '@/lib/db/client';
-import { reviewSessions, orgs } from '@/lib/db/schema';
+import { reviewSessions, sessionTakes, orgs } from '@/lib/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { runInterrogationPhase, runAdvisePhase, runSynthesisPhase } from '@/lib/engine/deliberate';
+import { runSingleSeatInterrogation, runSingleSeatAdvise, runSynthesisPhase } from '@/lib/engine/deliberate';
 import { checkAiCallCap } from '@/lib/rate-limit';
 
 export const maxDuration = 60;
@@ -37,14 +37,54 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: 'Daily AI call limit reached' }, { status: 429 });
     }
 
+    const seatIds = (rows[0].seatIds as string[]) || [];
+
     if (requestedPhase === 'interrogate') {
-      await runInterrogationPhase(session.orgId, id, dailyCap);
-      return NextResponse.json({ phase: 'interrogate_done', next: 'advise' });
+      const completedTakes = await withUserContext(session.orgId, 'all', () =>
+        db.select({ boardMemberId: sessionTakes.boardMemberId })
+          .from(sessionTakes)
+          .where(and(eq(sessionTakes.sessionId, id), eq(sessionTakes.phase, 'interrogate')))
+      );
+      const completedIds = new Set(completedTakes.map((t) => t.boardMemberId));
+      const nextSeatId = seatIds.find((sid) => !completedIds.has(sid));
+
+      if (!nextSeatId) {
+        return NextResponse.json({ phase: 'interrogate_done', next: 'advise', progress: { done: seatIds.length, total: seatIds.length } });
+      }
+
+      await runSingleSeatInterrogation(session.orgId, id, nextSeatId, dailyCap);
+      const done = completedIds.size + 1;
+      const allDone = done >= seatIds.length;
+
+      return NextResponse.json({
+        phase: allDone ? 'interrogate_done' : 'interrogate',
+        next: allDone ? 'advise' : 'interrogate',
+        progress: { done, total: seatIds.length, lastSeatId: nextSeatId },
+      });
     }
 
     if (requestedPhase === 'advise') {
-      await runAdvisePhase(session.orgId, id, dailyCap);
-      return NextResponse.json({ phase: 'advise_done', next: 'synthesize' });
+      const completedTakes = await withUserContext(session.orgId, 'all', () =>
+        db.select({ boardMemberId: sessionTakes.boardMemberId })
+          .from(sessionTakes)
+          .where(and(eq(sessionTakes.sessionId, id), eq(sessionTakes.phase, 'advise')))
+      );
+      const completedIds = new Set(completedTakes.map((t) => t.boardMemberId));
+      const nextSeatId = seatIds.find((sid) => !completedIds.has(sid));
+
+      if (!nextSeatId) {
+        return NextResponse.json({ phase: 'advise_done', next: 'synthesize', progress: { done: seatIds.length, total: seatIds.length } });
+      }
+
+      await runSingleSeatAdvise(session.orgId, id, nextSeatId, dailyCap);
+      const done = completedIds.size + 1;
+      const allDone = done >= seatIds.length;
+
+      return NextResponse.json({
+        phase: allDone ? 'advise_done' : 'advise',
+        next: allDone ? 'synthesize' : 'advise',
+        progress: { done, total: seatIds.length, lastSeatId: nextSeatId },
+      });
     }
 
     if (requestedPhase === 'synthesize') {
