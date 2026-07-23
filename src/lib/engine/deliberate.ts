@@ -577,34 +577,22 @@ async function runChairSynthesis(
 ): Promise<string> {
   const truncate = (s: string, max: number) => s.length > max ? s.slice(0, max) + '...' : s;
 
-  const crossExamText = crossExamResults.map((r) => {
-    const seat = seats.find((s) => s.id === r.boardMemberId);
-    return `[${seat?.name}]: ${truncate(r.content, 800)}`;
-  }).join('\n---\n');
-
   const voteText = votes.map((v) => {
     const seat = seats.find((s) => s.id === v.boardMemberId);
-    return `${seat?.name}: ${v.vote} - ${truncate(v.rationale || '', 200)}`;
+    return `${seat?.name}: ${v.vote}${v.rationale ? ' - ' + truncate(v.rationale, 150) : ''}`;
   }).join('\n');
 
-  const adviseText = adviseResults.map((r) => {
+  const crossExamText = crossExamResults.map((r) => {
     const seat = seats.find((s) => s.id === r.boardMemberId);
-    return `[${seat?.name}]: ${truncate(r.content, 400)}`;
+    return `[${seat?.name}]: ${truncate(r.content, 500)}`;
   }).join('\n---\n');
 
   const { data: synthesis } = await converseJson<SynthesisOutput>({
     model: SYNTHESIS_MODEL,
-    maxTokens: 3000,
-    systemPrompt: `You are the Chair synthesizing a board review session. Return a JSON object with this exact structure:
-{
-  "agreements": ["string - areas where board members agree"],
-  "disagreements": ["string - areas where board members disagree, never averaged away"],
-  "punchList": [{"title": "short title", "lens": "which role", "severity": "deal_killer|major|minor", "fix": "what specifically fixes it", "deadline": "optional timeframe"}],
-  "readinessNote": "one paragraph assessing current state",
-  "objectionUpdates": [{"title": "objection title", "newState": "addressed|resolved|still_weak", "reason": "why"}]
-}
-Rank punchList by severity (deal_killers first). Surface disagreements explicitly. Incorporate vote outcomes and cross-examination concessions.`,
-    userMessage: `Company: ${context.company.name}\nStage: ${context.company.stage}\n\nCross-Examination (incorporates interrogation findings):\n${crossExamText || 'N/A'}\n\nAdvise:\n${adviseText}\n\nVotes:\n${voteText || 'N/A'}\n\nObjections:\n${context.openObjections}`,
+    maxTokens: 2000,
+    temperature: 0.3,
+    systemPrompt: `Synthesize a board review. Return JSON: {"agreements":["..."],"disagreements":["..."],"punchList":[{"title":"...","lens":"...","severity":"deal_killer|major|minor","fix":"...","deadline":"optional"}],"readinessNote":"one paragraph","objectionUpdates":[{"title":"...","newState":"addressed|resolved|still_weak","reason":"..."}]}. Rank punchList by severity. Keep arrays concise (max 5 items each).`,
+    userMessage: `Company: ${context.company.name} (${context.company.stage})\n\nVotes:\n${voteText}\n\nCross-Exam:\n${crossExamText || 'N/A'}\n\nObjections:\n${context.openObjections}`,
   });
 
   // Build human-readable synthesis text from structured data
