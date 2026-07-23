@@ -27,69 +27,141 @@ interface ExtractedObjection {
   boardMemberId: string;
 }
 
-export async function runDeliberation(
-  orgId: string,
-  sessionId: string,
-  dailyCap: number,
-): Promise<void> {
+async function loadSessionAndSeats(orgId: string, sessionId: string): Promise<{ session: any; seats: BoardMemberRow[]; companyId: string }> {
   let session: any;
   let seats: BoardMemberRow[] = [];
-  let companyId: string;
 
   await withUserContext(orgId, 'all', async () => {
     const rows = await db.select().from(reviewSessions).where(eq(reviewSessions.id, sessionId)).limit(1);
     session = rows[0];
     if (!session) throw new Error('Session not found');
-    companyId = session.companyId;
 
     const seatIds = (session.seatIds as string[]) || [];
     if (seatIds.length === 0) throw new Error('No seats selected');
-    if (seatIds.length > 6) throw new Error('Maximum 6 seats per session');
 
     seats = await db.select().from(boardMembers)
       .where(and(eq(boardMembers.orgId, orgId), inArray(boardMembers.id, seatIds)));
   });
 
-  companyId = session.companyId;
+  return { session, seats, companyId: session.companyId };
+}
 
+export async function runInterrogationPhase(
+  orgId: string,
+  sessionId: string,
+  dailyCap: number,
+): Promise<void> {
+  const { session, seats, companyId } = await loadSessionAndSeats(orgId, sessionId);
   const query = session.focusPrompt || 'Full review of this company pitch and readiness';
   const context = await buildReviewContext(orgId, companyId, query);
 
-  // Phase 1: Interrogate (parallel)
   const capOk = await checkAiCallCap(orgId, dailyCap);
   if (!capOk) throw new Error('Daily AI call cap reached');
 
-  const interrogationResults = await Promise.all(
+  await Promise.all(
     seats.map((seat) => runInterrogation(orgId, sessionId, seat, context, query))
   );
 
   await withUserContext(orgId, companyId, async () => {
     await db.update(reviewSessions).set({ phase: 'advise' }).where(eq(reviewSessions.id, sessionId));
   });
+}
 
-  // Phase 2: Extract objections
+export async function runAdvisePhase(
+  orgId: string,
+  sessionId: string,
+  dailyCap: number,
+): Promise<void> {
+  const { session, seats, companyId } = await loadSessionAndSeats(orgId, sessionId);
+  const query = session.focusPrompt || 'Full review of this company pitch and readiness';
+  const context = await buildReviewContext(orgId, companyId, query);
+
+  const capOk = await checkAiCallCap(orgId, dailyCap);
+  if (!capOk) throw new Error('Daily AI call cap reached');
+
+  // Load interrogation takes for this session
+  const interrogationTakes = await withUserContext(orgId, 'all', () =>
+    db.select().from(sessionTakes)
+      .where(and(eq(sessionTakes.sessionId, sessionId), eq(sessionTakes.phase, 'interrogate')))
+  );
+
+  const interrogationResults = interrogationTakes.map((t) => ({
+    boardMemberId: t.boardMemberId,
+    content: t.content,
+  }));
+
+  // Extract objections from interrogation
   const allObjections = await extractObjections(orgId, companyId, sessionId, interrogationResults, seats);
 
-  // Phase 3: Advise (parallel)
-  const adviseResults = await Promise.all(
+  // Run advise in parallel
+  await Promise.all(
     seats.map((seat) => {
       const myTake = interrogationResults.find((r) => r.boardMemberId === seat.id);
       return runAdvise(orgId, sessionId, seat, context, allObjections, myTake?.content || '');
     })
   );
+}
 
-  // Phase 4: Chair synthesis
-  const synthesis = await runChairSynthesis(orgId, sessionId, companyId, context, interrogationResults, adviseResults, allObjections);
+export async function runSynthesisPhase(
+  orgId: string,
+  sessionId: string,
+  dailyCap: number,
+): Promise<void> {
+  const { session, seats, companyId } = await loadSessionAndSeats(orgId, sessionId);
+  const query = session.focusPrompt || 'Full review of this company pitch and readiness';
+  const context = await buildReviewContext(orgId, companyId, query);
 
-  // Store progress note
+  const capOk = await checkAiCallCap(orgId, dailyCap);
+  if (!capOk) throw new Error('Daily AI call cap reached');
+
+  // Load takes from DB
+  const allTakes = await withUserContext(orgId, 'all', () =>
+    db.select().from(sessionTakes).where(eq(sessionTakes.sessionId, sessionId))
+  );
+
+  const interrogationResults = allTakes
+    .filter((t) => t.phase === 'interrogate')
+    .map((t) => ({ boardMemberId: t.boardMemberId, content: t.content }));
+
+  const adviseResults = allTakes
+    .filter((t) => t.phase === 'advise')
+    .map((t) => ({ boardMemberId: t.boardMemberId, content: t.content }));
+
+  // Load objections for this session
+  const allObjections = await withUserContext(orgId, companyId, () =>
+    db.select().from(objections)
+      .where(eq(objections.raisedInSession, sessionId))
+  );
+
+  const objectionSummary: ExtractedObjection[] = allObjections.map((o) => ({
+    title: o.title,
+    detail: o.detail || '',
+    severity: o.severity as 'deal_killer' | 'major' | 'minor',
+    lens: o.lens || '',
+    boardMemberId: o.raisedBy || '',
+  }));
+
+  await runChairSynthesis(orgId, sessionId, companyId, context, interrogationResults, adviseResults, objectionSummary);
+
   await storeMemory(
     orgId,
     companyId,
     'progress_note',
-    `Session completed. ${allObjections.length} objections raised/updated. Chair summary: ${synthesis.slice(0, 300)}`,
+    `Session completed. ${objectionSummary.length} objections raised/updated.`,
     'session',
     0.7,
   );
+}
+
+// Legacy single-call function (kept for test compatibility)
+export async function runDeliberation(
+  orgId: string,
+  sessionId: string,
+  dailyCap: number,
+): Promise<void> {
+  await runInterrogationPhase(orgId, sessionId, dailyCap);
+  await runAdvisePhase(orgId, sessionId, dailyCap);
+  await runSynthesisPhase(orgId, sessionId, dailyCap);
 }
 
 async function runInterrogation(
@@ -110,7 +182,7 @@ async function runInterrogation(
     temperature: 0.7,
   });
 
-  await withUserContext(orgId, context.company.name ? 'all' : 'all', async () => {
+  await withUserContext(orgId, 'all', async () => {
     await db.insert(sessionTakes).values({
       sessionId,
       boardMemberId: seat.id,
@@ -176,7 +248,7 @@ async function extractObjections(
     userMessage: `Seats and their IDs:\n${seats.map((s) => `${s.id}: ${s.name} (${s.committeeRole})`).join('\n')}\n\nInterrogation transcripts:\n${combined}`,
   });
 
-  // Dedupe against existing objections (semantic similarity > 0.85 = re-raise)
+  // Dedupe against existing objections
   const existingObjections = await withUserContext(orgId, companyId, () =>
     db.select().from(objections)
       .where(and(eq(objections.companyId, companyId)))
@@ -187,13 +259,10 @@ async function extractObjections(
 
     if (existingObjections.length > 0) {
       try {
-        const objEmbedding = await embedText(obj.title + ' ' + obj.detail);
         for (const existing of existingObjections) {
           if (existing.state === 'resolved') continue;
-          // Simple keyword overlap check as fallback
           const titleOverlap = obj.title.toLowerCase().includes(existing.title.toLowerCase().split(' ')[0]);
           if (titleOverlap) {
-            // Update state history: re-raised
             const history = (existing.stateHistory as any[]) || [];
             history.push({ state: existing.state, sessionId, note: 'Re-raised in session', at: new Date().toISOString() });
             await withUserContext(orgId, companyId, () =>
@@ -274,15 +343,12 @@ Format your response as:
     temperature: 0.5,
   });
 
-  // Extract punch list from synthesis
   const punchListMatch = result.content.match(/## Punch List\n([\s\S]*?)(?=\n## |$)/);
   const punchItems = punchListMatch ? punchListMatch[1].trim().split('\n').filter(Boolean) : [];
 
-  // Extract readiness note
   const readinessMatch = result.content.match(/## Readiness Note\n([\s\S]*?)(?=\n## |$)/);
   const readinessNote = readinessMatch ? readinessMatch[1].trim() : null;
 
-  // Persist
   await withUserContext(orgId, companyId, async () => {
     await db.update(reviewSessions).set({
       phase: 'synthesized',

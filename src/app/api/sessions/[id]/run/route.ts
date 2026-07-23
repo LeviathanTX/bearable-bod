@@ -3,16 +3,19 @@ import { resolveSession } from '@/lib/auth/session';
 import { db, withUserContext } from '@/lib/db/client';
 import { reviewSessions, orgs } from '@/lib/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { runDeliberation } from '@/lib/engine/deliberate';
+import { runInterrogationPhase, runAdvisePhase, runSynthesisPhase } from '@/lib/engine/deliberate';
 import { checkAiCallCap } from '@/lib/rate-limit';
 
-export const maxDuration = 120;
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const session = await resolveSession();
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const { id } = await params;
+
+    const body = await req.json().catch(() => ({}));
+    const requestedPhase = body.phase || 'interrogate';
 
     const companyScope = session.orgRole === 'founder' ? session.companyId! : 'all';
 
@@ -23,7 +26,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
 
     if (rows.length === 0) return NextResponse.json({ error: 'Session not found' }, { status: 404 });
-    if (rows[0].status === 'complete') return NextResponse.json({ session: rows[0], already: true });
+    if (rows[0].status === 'complete') return NextResponse.json({ session: rows[0], phase: 'complete' });
 
     const orgRows = await db.select({ dailyAiCallCap: orgs.dailyAiCallCap })
       .from(orgs).where(eq(orgs.id, session.orgId)).limit(1);
@@ -34,13 +37,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: 'Daily AI call limit reached' }, { status: 429 });
     }
 
-    await runDeliberation(session.orgId, id, dailyCap);
+    if (requestedPhase === 'interrogate') {
+      await runInterrogationPhase(session.orgId, id, dailyCap);
+      return NextResponse.json({ phase: 'interrogate_done', next: 'advise' });
+    }
 
-    const updated = await withUserContext(session.orgId, companyScope, () =>
-      db.select().from(reviewSessions).where(eq(reviewSessions.id, id)).limit(1)
-    );
+    if (requestedPhase === 'advise') {
+      await runAdvisePhase(session.orgId, id, dailyCap);
+      return NextResponse.json({ phase: 'advise_done', next: 'synthesize' });
+    }
 
-    return NextResponse.json({ session: updated[0] });
+    if (requestedPhase === 'synthesize') {
+      await runSynthesisPhase(session.orgId, id, dailyCap);
+      const updated = await withUserContext(session.orgId, companyScope, () =>
+        db.select().from(reviewSessions).where(eq(reviewSessions.id, id)).limit(1)
+      );
+      return NextResponse.json({ session: updated[0], phase: 'complete' });
+    }
+
+    return NextResponse.json({ error: 'Invalid phase' }, { status: 400 });
   } catch (err: any) {
     console.error('Deliberation run error:', err);
     return NextResponse.json({ error: err.message || 'Deliberation failed' }, { status: 500 });

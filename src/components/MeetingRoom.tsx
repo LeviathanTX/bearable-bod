@@ -83,12 +83,35 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
       const { session } = await res.json();
       setSessionId(session.id);
       startPolling(session.id);
-
-      // Trigger deliberation (runs synchronously on server, client polls for progress)
-      fetch(`/api/sessions/${session.id}/run`, { method: 'POST' }).catch(() => {});
+      driveDeliberation(session.id);
     } catch (err: any) {
       setError(err.message);
       setPhase('setup');
+    }
+  };
+
+  const driveDeliberation = async (sid: string) => {
+    try {
+      const runPhase = async (phase: string) => {
+        const res = await fetch(`/api/sessions/${sid}/run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phase }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({ error: 'Unknown error' }));
+          throw new Error(data.error || `Phase ${phase} failed`);
+        }
+        return res.json();
+      };
+
+      await runPhase('interrogate');
+      setPhase('advising');
+      await runPhase('advise');
+      setPhase('synthesizing');
+      await runPhase('synthesize');
+    } catch (err: any) {
+      setError(err.message);
     }
   };
 
