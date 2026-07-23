@@ -29,6 +29,14 @@ interface SessionData {
   mode: string;
 }
 
+interface VoteCard {
+  memberId: string;
+  memberName: string;
+  vote: 'YES' | 'YES_WITH_CONDITIONS' | 'NO';
+  rationale: string;
+  revealed: boolean;
+}
+
 type MeetingPhase = 'setup' | 'interrogating' | 'cross_examining' | 'advising' | 'voting' | 'synthesizing' | 'complete';
 
 interface Props {
@@ -44,6 +52,7 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
   const [phase, setPhase] = useState<MeetingPhase>('setup');
   const [selectedSeats, setSelectedSeats] = useState<string[]>([]);
   const [focusPrompt, setFocusPrompt] = useState('');
+  const [founderStatement, setFounderStatement] = useState('');
   const [mode, setMode] = useState('full_review');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [takes, setTakes] = useState<Take[]>([]);
@@ -52,6 +61,8 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
   const [error, setError] = useState<string | null>(null);
   const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
   const [speakerLabel, setSpeakerLabel] = useState<string | null>(null);
+  const [voteCards, setVoteCards] = useState<VoteCard[]>([]);
+  const [votesRevealed, setVotesRevealed] = useState(false);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef(false);
 
@@ -76,6 +87,7 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
           seatIds: selectedSeats,
           mode,
           focusPrompt: focusPrompt || undefined,
+          founderStatement: founderStatement || undefined,
         }),
       });
 
@@ -150,6 +162,19 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
         await fetchTakes();
         clearSpeaker();
 
+        if (phaseName === 'voting' && data.vote) {
+          setVoteCards((prev) => [
+            ...prev,
+            {
+              memberId: seatId,
+              memberName: member?.name || 'Advisor',
+              vote: data.vote,
+              rationale: data.rationale || data.content || '',
+              revealed: false,
+            },
+          ]);
+        }
+
         if (done || data.phase?.endsWith('_done')) break;
         if (data.session?.status === 'complete') { setPhase('complete'); return true; }
         if (i < selectedSeats.length - 1) await delay(2000);
@@ -157,27 +182,24 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
       return false;
     };
 
-    // Phase 1: Interrogate
     if (await drivePhase('interrogating', 'interrogate', (n) => `${n} is speaking...`)) return;
     if (abortRef.current) return;
     await delay(1500);
 
-    // Phase 2: Cross-Examination
     if (await drivePhase('cross_examining', 'cross_examine', (n) => `${n} is cross-examining...`)) return;
     if (abortRef.current) return;
     await delay(1500);
 
-    // Phase 3: Advise
     if (await drivePhase('advising', 'advise', (n) => `${n} is advising...`)) return;
     if (abortRef.current) return;
     await delay(1500);
 
-    // Phase 4: Vote
     if (await drivePhase('voting', 'vote', (n) => `${n} is voting...`)) return;
     if (abortRef.current) return;
+
+    await revealVotesTheatrically();
     await delay(1500);
 
-    // Phase 5: Synthesize
     setPhase('synthesizing');
     revealSeat('chair', 'Chair is synthesizing...');
 
@@ -188,6 +210,25 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
     if (synthData.session?.synthesis) setSynthesis(synthData.session.synthesis);
     if (synthData.session?.punchList?.length) setPunchList(synthData.session.punchList);
     setPhase('complete');
+  };
+
+  const revealVotesTheatrically = async () => {
+    setVoteCards((prev) => {
+      const updated = [...prev];
+      const revealSequence = async () => {
+        for (let i = 0; i < updated.length; i++) {
+          await delay(800);
+          setVoteCards((cards) =>
+            cards.map((c, idx) => (idx === i ? { ...c, revealed: true } : c))
+          );
+        }
+        await delay(600);
+        setVotesRevealed(true);
+      };
+      revealSequence();
+      return updated;
+    });
+    await delay(800 * (selectedSeats.length) + 600);
   };
 
   useEffect(() => {
@@ -208,9 +249,18 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
     }
   };
 
+  const voteTally = voteCards.reduce(
+    (acc, c) => {
+      if (c.vote === 'YES') acc.yes++;
+      else if (c.vote === 'YES_WITH_CONDITIONS') acc.conditional++;
+      else acc.no++;
+      return acc;
+    },
+    { yes: 0, conditional: 0, no: 0 }
+  );
+
   return (
     <div className="fixed inset-0 z-50 bg-gray-900 flex flex-col">
-      {/* Header */}
       <header className="flex items-center justify-between px-6 py-3 bg-gray-800 border-b border-gray-700">
         <div className="flex items-center gap-4">
           <h2 className="text-white font-display font-semibold text-lg">{companyName}</h2>
@@ -227,7 +277,6 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Main area */}
         <div className="flex-1 flex flex-col">
           {phase === 'setup' && (
             <SetupPanel
@@ -236,6 +285,8 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
               toggleSeat={toggleSeat}
               focusPrompt={focusPrompt}
               setFocusPrompt={setFocusPrompt}
+              founderStatement={founderStatement}
+              setFounderStatement={setFounderStatement}
               mode={mode}
               setMode={setMode}
               onStart={startSession}
@@ -245,8 +296,9 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
 
           {phase !== 'setup' && (
             <>
-              {/* Seat grid */}
-              <div className="p-4 grid grid-cols-2 md:grid-cols-3 gap-3">
+              <div className={`p-4 grid grid-cols-2 md:grid-cols-3 gap-3 transition-opacity duration-500 ${
+                phase === 'voting' ? 'opacity-40' : 'opacity-100'
+              }`}>
                 {selectedSeats.map((seatId) => {
                   const member = boardMembers.find((m) => m.id === seatId);
                   if (!member) return null;
@@ -266,7 +318,58 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
                 })}
               </div>
 
-              {/* Speaking label */}
+              {phase === 'voting' && voteCards.length > 0 && (
+                <div className="px-4 pb-4">
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    {voteCards.map((card, idx) => (
+                      <div
+                        key={card.memberId}
+                        className={`rounded-lg border p-4 transition-all duration-300 ${
+                          card.revealed
+                            ? card.vote === 'YES'
+                              ? 'bg-emerald-900/30 border-emerald-500/50'
+                              : card.vote === 'YES_WITH_CONDITIONS'
+                              ? 'bg-amber-900/30 border-amber-500/50'
+                              : 'bg-red-900/30 border-red-500/50'
+                            : 'bg-gray-800/60 border-gray-700'
+                        }`}
+                        style={{
+                          perspective: '600px',
+                        }}
+                      >
+                        <div
+                          className={card.revealed ? 'animate-flipIn' : 'opacity-0'}
+                          style={{ transformStyle: 'preserve-3d' }}
+                        >
+                          <p className="text-gray-300 text-xs font-medium mb-1">{card.memberName}</p>
+                          <p className={`text-sm font-semibold mb-1 ${
+                            card.vote === 'YES'
+                              ? 'text-emerald-400'
+                              : card.vote === 'YES_WITH_CONDITIONS'
+                              ? 'text-amber-400'
+                              : 'text-red-400'
+                          }`}>
+                            {card.vote === 'YES_WITH_CONDITIONS' ? 'YES (w/ conditions)' : card.vote}
+                          </p>
+                          <p className="text-gray-400 text-xs leading-relaxed line-clamp-2">
+                            {card.rationale.slice(0, 120)}{card.rationale.length > 120 ? '...' : ''}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {votesRevealed && (
+                    <div className="mt-3 flex items-center gap-4 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700">
+                      <span className="text-gray-400 text-xs font-medium">Tally:</span>
+                      <span className="text-emerald-400 text-xs font-semibold">YES {voteTally.yes}</span>
+                      <span className="text-amber-400 text-xs font-semibold">CONDITIONAL {voteTally.conditional}</span>
+                      <span className="text-red-400 text-xs font-semibold">NO {voteTally.no}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {speakerLabel && phase !== 'complete' && (
                 <div className="px-6 pb-2">
                   <p className="text-emerald-400 text-sm font-medium animate-pulse">
@@ -275,8 +378,7 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
                 </div>
               )}
 
-              {/* Shimmer bar when waiting between seats */}
-              {phase !== 'complete' && !activeSpeaker && (
+              {phase !== 'complete' && !activeSpeaker && phase !== 'voting' && (
                 <div className="px-6 pb-2">
                   <div className="h-1 rounded-full bg-gray-800 overflow-hidden">
                     <div className="h-full w-1/3 bg-gradient-to-r from-transparent via-emerald-500/40 to-transparent animate-shimmer" />
@@ -284,9 +386,8 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
                 </div>
               )}
 
-              {/* Synthesis panel */}
               {phase === 'complete' && synthesis && (
-                <div className="px-4 pb-4 flex-1 overflow-y-auto">
+                <div className="px-4 pb-4 flex-1 overflow-y-auto space-y-4">
                   <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
                     <h3 className="text-emerald-400 font-medium text-sm mb-2">Chair Synthesis</h3>
                     <div className="text-gray-300 text-sm whitespace-pre-wrap">{synthesis}</div>
@@ -301,13 +402,31 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
                       </div>
                     )}
                   </div>
+
+                  {votesRevealed && voteCards.length > 0 && (
+                    <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
+                      <h3 className="text-emerald-400 font-medium text-sm mb-2">Final Vote</h3>
+                      <div className="flex items-center gap-4">
+                        <span className="text-emerald-400 text-sm font-semibold">YES {voteTally.yes}</span>
+                        <span className="text-amber-400 text-sm font-semibold">CONDITIONAL {voteTally.conditional}</span>
+                        <span className="text-red-400 text-sm font-semibold">NO {voteTally.no}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {sessionId && <DeliverablesPanel sessionId={sessionId} />}
+                </div>
+              )}
+
+              {phase === 'complete' && !synthesis && sessionId && (
+                <div className="px-4 pb-4 flex-1 overflow-y-auto">
+                  {sessionId && <DeliverablesPanel sessionId={sessionId} />}
                 </div>
               )}
             </>
           )}
         </div>
 
-        {/* Right rail: transcript */}
         {phase !== 'setup' && (
           <aside className="w-80 border-l border-gray-700 bg-gray-850 flex flex-col">
             <div className="px-4 py-3 border-b border-gray-700">
@@ -322,12 +441,12 @@ export function MeetingRoom({ companyId, companyName, boardMembers, onClose }: P
                     className="text-sm animate-fadeIn"
                   >
                     <div className="flex items-center gap-2 mb-0.5">
-                      <span className="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-xs">
+                      <span className="w-6 h-6 rounded-full bg-gradient-to-br from-emerald-600 to-emerald-900 flex items-center justify-center text-xs text-white font-medium">
                         {member?.name?.charAt(0) || '?'}
                       </span>
                       <span className="text-gray-400 font-medium text-xs">{member?.name}</span>
                       <span className="text-gray-600 text-xs ml-auto">
-                        {take.phase === 'interrogate' ? 'interrogation' : 'advisory'}
+                        {take.phase === 'interrogate' ? 'interrogation' : take.phase === 'vote' ? 'vote' : 'advisory'}
                       </span>
                     </div>
                     <p className="text-gray-300 text-xs leading-relaxed pl-8">
@@ -359,6 +478,8 @@ function SetupPanel({
   toggleSeat,
   focusPrompt,
   setFocusPrompt,
+  founderStatement,
+  setFounderStatement,
   mode,
   setMode,
   onStart,
@@ -369,6 +490,8 @@ function SetupPanel({
   toggleSeat: (id: string) => void;
   focusPrompt: string;
   setFocusPrompt: (v: string) => void;
+  founderStatement: string;
+  setFounderStatement: (v: string) => void;
   mode: string;
   setMode: (v: string) => void;
   onStart: () => void;
@@ -403,7 +526,7 @@ function SetupPanel({
                 }`}
               >
                 <div className="flex items-center gap-2">
-                  <span className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-sm font-medium text-gray-300">
+                  <span className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-600 to-emerald-900 flex items-center justify-center text-sm font-medium text-white">
                     {member.name.charAt(0)}
                   </span>
                   <div className="min-w-0">
@@ -413,7 +536,7 @@ function SetupPanel({
                     <p className="text-xs text-gray-500 truncate">{member.committeeRole || member.title}</p>
                   </div>
                   {selected && (
-                    <span className="ml-auto text-emerald-400 text-xs">✓</span>
+                    <span className="ml-auto text-emerald-400 text-xs">&#10003;</span>
                   )}
                 </div>
               </button>
@@ -452,6 +575,17 @@ function SetupPanel({
             onChange={(e) => setFocusPrompt(e.target.value)}
             placeholder="What specific area should the board focus on?"
             rows={2}
+            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-200 text-sm placeholder-gray-500 focus:outline-none focus:border-emerald-500"
+          />
+        </div>
+
+        <div>
+          <label className="text-white text-sm font-medium block mb-1">{"Founder's Pitch Statement (optional)"}</label>
+          <textarea
+            value={founderStatement}
+            onChange={(e) => setFounderStatement(e.target.value)}
+            placeholder="Summarize your pitch in your own words - the board will use this as context."
+            rows={3}
             className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-200 text-sm placeholder-gray-500 focus:outline-none focus:border-emerald-500"
           />
         </div>
@@ -497,14 +631,13 @@ function SeatTile({
           : 'border-gray-700'
       }`}
     >
-      {/* Emerald ring pulse on active */}
       {isActive && (
         <div className="absolute inset-0 rounded-lg border-2 border-emerald-400 animate-ping opacity-30 pointer-events-none" />
       )}
 
       <div className="flex items-center gap-3 mb-2">
         <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold transition-colors ${
-          isActive ? 'bg-emerald-600 text-white' : 'bg-gray-700 text-gray-300'
+          isActive ? 'bg-emerald-600 text-white' : 'bg-gradient-to-br from-emerald-600 to-emerald-900 text-white'
         }`}>
           {member.name.split(' ').map((w) => w[0]).join('').slice(0, 2)}
         </div>
@@ -537,6 +670,81 @@ function SeatTile({
       {!latestTake && !isActive && phase !== 'complete' && (
         <p className="text-gray-600 text-xs mt-1">Waiting...</p>
       )}
+    </div>
+  );
+}
+
+function DeliverablesPanel({ sessionId }: { sessionId: string }) {
+  const [generating, setGenerating] = useState<string | null>(null);
+
+  const deliverables = [
+    { type: 'governance_simulation', label: 'Governance Simulation', icon: '\u{1F4CB}' },
+    { type: 'business_case', label: 'Business Case', icon: '\u{1F4C8}' },
+    { type: 'founder_deck', label: 'Founder Deck', icon: '\u{1F3AF}' },
+  ];
+
+  const handleDownload = async (type: string) => {
+    setGenerating(type);
+    try {
+      const postRes = await fetch(`/api/sessions/${sessionId}/deliverables`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type }),
+      });
+      if (!postRes.ok) throw new Error('Generation failed');
+
+      const getRes = await fetch(`/api/sessions/${sessionId}/deliverables?type=${type}`);
+      if (!getRes.ok) throw new Error('Download failed');
+      const { url } = await getRes.json();
+      window.open(url, '_blank');
+    } catch {
+    } finally {
+      setGenerating(null);
+    }
+  };
+
+  const handleUpload = async (type: string) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.pdf,.docx,.pptx';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('type', type);
+      await fetch(`/api/sessions/${sessionId}/deliverables/upload`, {
+        method: 'POST',
+        body: formData,
+      });
+    };
+    input.click();
+  };
+
+  return (
+    <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
+      <h3 className="text-emerald-400 font-medium text-sm mb-3">Deliverables</h3>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {deliverables.map((d) => (
+          <div key={d.type} className="bg-gray-900 border border-gray-700 rounded-lg p-3 flex flex-col items-center gap-2">
+            <span className="text-2xl">{d.icon}</span>
+            <p className="text-gray-200 text-xs font-medium text-center">{d.label}</p>
+            <button
+              onClick={() => handleDownload(d.type)}
+              disabled={generating === d.type}
+              className="w-full py-1.5 text-xs font-medium rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white transition-colors"
+            >
+              {generating === d.type ? 'Generating...' : 'Download'}
+            </button>
+            <button
+              onClick={() => handleUpload(d.type)}
+              className="w-full py-1.5 text-xs font-medium rounded border border-gray-600 text-gray-300 hover:border-gray-500 hover:text-white transition-colors"
+            >
+              Upload Edited Final
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
