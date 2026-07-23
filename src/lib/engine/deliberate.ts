@@ -302,20 +302,28 @@ export async function runSynthesisPhase(
   dailyCap: number,
 ): Promise<void> {
   const { session, seats, companyId } = await loadSessionAndSeats(orgId, sessionId);
-  const query = session.focusPrompt || 'Full review of this company pitch and readiness';
-  const context = await buildReviewContext(orgId, companyId, query);
 
   const capOk = await checkAiCallCap(orgId, dailyCap);
   if (!capOk) throw new Error('Daily AI call cap reached');
 
-  // Load takes from DB
-  const allTakes = await withUserContext(orgId, 'all', () =>
-    db.select().from(sessionTakes).where(eq(sessionTakes.sessionId, sessionId))
+  // Load company info (lightweight, no RAG)
+  const companyRows = await withUserContext(orgId, companyId, () =>
+    db.select().from(companies).where(eq(companies.id, companyId)).limit(1)
   );
+  const company = companyRows[0];
 
-  const interrogationResults = allTakes
-    .filter((t) => t.phase === 'interrogate')
-    .map((t) => ({ boardMemberId: t.boardMemberId, content: t.content }));
+  // Load takes, objections, votes in parallel
+  const [allTakes, allObjections, votes] = await Promise.all([
+    withUserContext(orgId, 'all', () =>
+      db.select().from(sessionTakes).where(eq(sessionTakes.sessionId, sessionId))
+    ),
+    withUserContext(orgId, companyId, () =>
+      db.select().from(objections).where(eq(objections.raisedInSession, sessionId))
+    ),
+    withUserContext(orgId, 'all', () =>
+      db.select().from(sessionVotes).where(eq(sessionVotes.sessionId, sessionId))
+    ),
+  ]);
 
   const adviseResults = allTakes
     .filter((t) => t.phase === 'advise')
@@ -325,12 +333,6 @@ export async function runSynthesisPhase(
     .filter((t) => t.phase === 'cross_examine')
     .map((t) => ({ boardMemberId: t.boardMemberId, content: t.content }));
 
-  // Load objections for this session
-  const allObjections = await withUserContext(orgId, companyId, () =>
-    db.select().from(objections)
-      .where(eq(objections.raisedInSession, sessionId))
-  );
-
   const objectionSummary: ExtractedObjection[] = allObjections.map((o) => ({
     title: o.title,
     detail: o.detail || '',
@@ -339,12 +341,16 @@ export async function runSynthesisPhase(
     boardMemberId: o.raisedBy || '',
   }));
 
-  // Load votes
-  const votes = await withUserContext(orgId, 'all', () =>
-    db.select().from(sessionVotes).where(eq(sessionVotes.sessionId, sessionId))
-  );
+  const objectionText = objectionSummary
+    .map((o) => `[${o.severity}] ${o.title}: ${o.detail.slice(0, 80)}`)
+    .join('\n');
 
-  await runChairSynthesis(orgId, sessionId, companyId, context, interrogationResults, adviseResults, crossExamResults, objectionSummary, votes, seats);
+  const lightContext = {
+    company: { name: company?.name || 'Unknown', stage: company?.stage || 'unknown' },
+    openObjections: objectionText,
+  };
+
+  await runChairSynthesis(orgId, sessionId, companyId, lightContext, [], adviseResults, crossExamResults, objectionSummary, votes, seats);
 
   await storeMemory(
     orgId,
@@ -561,7 +567,7 @@ async function runChairSynthesis(
   orgId: string,
   sessionId: string,
   companyId: string,
-  context: ReviewContext,
+  context: { company: { name: string; stage: string }; openObjections: string },
   interrogations: { boardMemberId: string; content: string }[],
   adviseResults: { boardMemberId: string; content: string }[],
   crossExamResults: { boardMemberId: string; content: string }[],
