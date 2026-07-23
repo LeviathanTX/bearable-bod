@@ -24,42 +24,48 @@ export async function POST() {
 
   let success = 0;
   let failed = 0;
+  const errors: string[] = [];
 
-  for (const chunk of chunks) {
-    try {
-      const embedding = await embedText(chunk.content);
-      await db.execute(sql`
-        UPDATE document_chunks
-        SET embedding = ${sql.raw(`'[${embedding.join(',')}]'::vector`)}
-        WHERE id = ${chunk.id}
-      `);
-      success++;
-    } catch (err) {
-      console.error(`[backfill] Failed chunk ${chunk.id}: ${(err as Error).message}`);
-      failed++;
+  await withUserContext(session.orgId, 'all', async () => {
+    for (const chunk of chunks) {
+      try {
+        const embedding = await embedText(chunk.content);
+        const vectorStr = `[${embedding.join(',')}]`;
+        await db.execute(sql`
+          UPDATE document_chunks
+          SET embedding = ${vectorStr}::vector
+          WHERE id = ${chunk.id}
+        `);
+        success++;
+      } catch (err) {
+        const msg = (err as Error).message;
+        console.error(`[backfill] Failed chunk ${chunk.id}: ${msg}`);
+        if (errors.length < 3) errors.push(msg);
+        failed++;
+      }
     }
-  }
 
-  // Update document status for any docs that now have all embeddings
-  if (success > 0) {
-    await db.execute(sql`
-      UPDATE documents SET status = 'ready', updated_at = NOW()
-      WHERE id IN (
-        SELECT d.id FROM documents d
-        WHERE d.org_id = ${session.orgId}
-          AND d.status IN ('partial_embeddings', 'no_embeddings', 'processing')
-          AND NOT EXISTS (
-            SELECT 1 FROM document_chunks dc
-            WHERE dc.document_id = d.id AND dc.embedding IS NULL
-          )
-      )
-    `);
-  }
+    if (success > 0) {
+      await db.execute(sql`
+        UPDATE documents SET status = 'ready', updated_at = NOW()
+        WHERE id IN (
+          SELECT d.id FROM documents d
+          WHERE d.org_id = ${session.orgId}
+            AND d.status IN ('partial_embeddings', 'no_embeddings', 'processing')
+            AND NOT EXISTS (
+              SELECT 1 FROM document_chunks dc
+              WHERE dc.document_id = d.id AND dc.embedding IS NULL
+            )
+        )
+      `);
+    }
+  });
 
   return NextResponse.json({
     processed: chunks.length,
     success,
     failed,
+    errors: errors.length > 0 ? errors : undefined,
     remaining: chunks.length === 50 ? 'more chunks pending, call again' : 0,
   });
 }
